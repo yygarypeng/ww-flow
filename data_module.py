@@ -24,19 +24,23 @@ class ArrayDataset_StdNorm(Dataset):
 
 class WBosonDataModule(L.LightningDataModule):
     def __init__(
-        self, 
-        X, Y, 
-        batch_size=512, 
-        val_frac=0.1, test_frac=0.1, 
-        num_workers=None, 
+        self,
+        X,
+        Y,
+        seed=114,
+        batch_size=512,
+        val_frac=0.1,
+        test_frac=0.1,
+        num_workers=4,
+        persistent_workers=False,
         pin_memory=True,
-        prefetch_factor=4,
+        prefetch_factor=2,
     ):
         super().__init__()
         self.X = X
         self.Y = Y
         self.batch_size = batch_size
-        
+        self.seed = seed
         # Set reasonable default for num_workers
         if num_workers is None:
             # Use 80% of available cores to prevent system overload
@@ -44,11 +48,13 @@ class WBosonDataModule(L.LightningDataModule):
             print(f"Setting num_workers to {self.num_workers}")
         else:
             self.num_workers = num_workers
+            print(f"Using {self.num_workers} num oof workers in data loading.")
             
         self.val_frac = val_frac
         self.test_frac = test_frac
         self.pin_memory = pin_memory
         self.prefetch_factor = prefetch_factor
+        self.persistent_workers = persistent_workers
 
     def setup(self, stage=None):
         # the `stage` argument is used to specify which stage of the training process is being set up
@@ -67,37 +73,37 @@ class WBosonDataModule(L.LightningDataModule):
         )
 
     def train_dataloader(self):
-        print("Creating train dataloader")
         return DataLoader(
-            self.train_ds, 
-            batch_size=self.batch_size, 
-            shuffle=True, # turn on during training
-            num_workers=self.num_workers, 
+            self.train_ds,
+            batch_size=self.batch_size,
+            shuffle=True,
+            num_workers=self.num_workers,
             pin_memory=self.pin_memory,
-            persistent_workers=(self.num_workers > 0),
+            persistent_workers=self.persistent_workers,
             prefetch_factor=self.prefetch_factor if self.num_workers > 0 else None,
         )
 
     def val_dataloader(self):
-        print("Creating val dataloader")
         return DataLoader(
-            self.val_ds, 
-            batch_size=self.batch_size, 
+            self.val_ds,
+            batch_size=self.batch_size,
             shuffle=False,
-            num_workers=self.num_workers, 
+            num_workers=self.num_workers,
             pin_memory=self.pin_memory,
-            persistent_workers=(self.num_workers > 0),
+            persistent_workers=self.persistent_workers,
             prefetch_factor=self.prefetch_factor if self.num_workers > 0 else None,
         )
 
     def test_dataloader(self):
-        print("Creating test dataloader")
+        if self.test_ds is None:
+            return None
+
         return DataLoader(
-            self.test_ds, 
-            batch_size=self.batch_size, 
+            self.test_ds,
+            batch_size=self.batch_size,
             shuffle=False,
-            num_workers=self.num_workers, 
+            num_workers=self.num_workers,
             pin_memory=self.pin_memory,
-            persistent_workers=(self.num_workers > 0),
+            persistent_workers=self.persistent_workers,
             prefetch_factor=self.prefetch_factor if self.num_workers > 0 else None,
         )

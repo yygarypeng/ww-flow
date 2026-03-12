@@ -1,0 +1,31 @@
+parameters:
+  loss_weights:
+    # W-part
+    L_x: 20.0
+    # lep-part
+    L_y: 50.0
+    # N(0, 1) sampling part
+    L_z: 30.0
+    # padding part (if any)
+    L_pad: 1.0
+    #  customized losses
+    # derived mass of W bosons
+    L_W: 20.0
+    # derived mass of Higgs boson
+    L_higgs: 10.0
+    # monitoring losses
+    L_neu_mass: 0.0
+    L_x_huber: 0.0
+  batch_size: 256
+  epochs: 1024
+  learning_rate: 5.0e-5
+  num_blocks: 32
+  # observed variables dimension (2 lep + met)
+  obs_dim: 10
+  # number of lacking constraints (two neutrinos are massless)
+  lack_dim: 4
+
+paths:
+  data_path: "/root/data/danning_h5/ypeng/mc20_qe_v4_recotruth_merged.h5"
+  project_name: "hww_inn_regressor"
+  ckpt_path: "/root/work/ww-flow/logs/"

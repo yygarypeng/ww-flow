@@ -1,27 +1,28 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 class DenseDropoutBlock(nn.Module):
     """
     Pre-activation block:
-        BN(in_dim) -> SiLU -> Linear(in_dim -> out_dim) -> Dropout
+        BN(in_dim) -> GELU -> Linear(in_dim -> out_dim) -> Dropout
     """
     def __init__(self, in_dim, out_dim, dropout=0.0):
         super().__init__()
-        self.bn = nn.LayerNorm(in_dim)
-        self.act = nn.SiLU()
+        self.norm = nn.LayerNorm(in_dim)
+        self.act = nn.GELU()
         self.fc = nn.Linear(in_dim, out_dim)
         self.drop = nn.Dropout(dropout) if dropout and dropout > 0 else nn.Identity()
 
     def forward(self, x):
-        y = self.bn(x)
+        y = self.norm(x)
         y = self.act(y)
         y = self.fc(y)
         y = self.drop(y)
         return y
 
 class ResidualBlock(nn.Module):
-    def __init__(self, in_dim, out_dim, dropout=0.1):
+    def __init__(self, in_dim, out_dim, dropout=0.3):
         super().__init__()
 
         # projection only when needed
@@ -46,7 +47,7 @@ class SNet(nn.Module):
         self.res2 = ResidualBlock(hidden_dim, hidden_dim)
         self.proj = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim // 2),
-            nn.SiLU(),
+            nn.GELU(),
             nn.Linear(hidden_dim // 2, half),
             nn.Tanh()   # keep scale bounded
         )
@@ -68,7 +69,7 @@ class TNet(nn.Module):
         self.res2 = ResidualBlock(hidden_dim, hidden_dim)
         self.proj = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim // 2),
-            nn.SiLU(),
+            nn.GELU(),
             nn.Linear(hidden_dim // 2, half),
         )
 
@@ -138,7 +139,6 @@ class ReversibleBlock(nn.Module):
             logdet = logdet + ld
         return x, logdet
 
-
 class Permutation(nn.Module):
     def __init__(self, dim, seed=114):
         super().__init__()
@@ -167,6 +167,8 @@ class WtoNeutrinoBlock(nn.Module):
 
     def forward(self, input, output, reverse=False):
         logdet = torch.zeros(input.size(0), device=input.device, dtype=input.dtype)
+        eps = torch.tensor(1e-16, device=input.device, dtype=input.dtype)
+        max_arg = torch.tensor(1e12, device=input.device, dtype=input.dtype)
 
         if not reverse:
             # ----- Forward path -----
@@ -222,15 +224,24 @@ class WtoNeutrinoBlock(nn.Module):
             nu_phys = nu_norm * std_nu + mean_nu
             nu0_px, nu0_py, nu0_pz = nu_phys[:,0], nu_phys[:,1], nu_phys[:,2]
             nu1_px, nu1_py, nu1_pz = nu_phys[:,3], nu_phys[:,4], nu_phys[:,5]
-            nu0_e = torch.sqrt(nu0_px**2 + nu0_py**2 + nu0_pz**2 + 1e-16) # force massless
-            nu1_e = torch.sqrt(nu1_px**2 + nu1_py**2 + nu1_pz**2 + 1e-16)
+            # force massless, with clamping to avoid overflow -> inf
+            nu0_p2 = torch.clamp(nu0_px**2 + nu0_py**2 + nu0_pz**2, min=eps, max=max_arg)
+            nu1_p2 = torch.clamp(nu1_px**2 + nu1_py**2 + nu1_pz**2, min=eps, max=max_arg)
+            nu0_e = torch.sqrt(nu0_p2)
+            nu1_e = torch.sqrt(nu1_p2)
 
             # Reconstruct W bosons
             W0_px, W0_py, W0_pz = l0_px + nu0_px, l0_py + nu0_py, l0_pz + nu0_pz
             W1_px, W1_py, W1_pz = l1_px + nu1_px, l1_py + nu1_py, l1_pz + nu1_pz
-            W0_e, W1_e = l0_e + nu0_e, l1_e + nu1_e
-            W0_m = torch.sqrt(torch.clamp(W0_e**2 - (W0_px**2 + W0_py**2 + W0_pz**2), min=1e-16))
-            W1_m = torch.sqrt(torch.clamp(W1_e**2 - (W1_px**2 + W1_py**2 + W1_pz**2), min=1e-16))
+            W0_e = torch.clamp(l0_e + nu0_e, min=-max_arg, max=max_arg)
+            W1_e = torch.clamp(l1_e + nu1_e, min=-max_arg, max=max_arg)
+            W0_p2 = torch.clamp(W0_px**2 + W0_py**2 + W0_pz**2, min=0.0, max=max_arg)
+            W1_p2 = torch.clamp(W1_px**2 + W1_py**2 + W1_pz**2, min=0.0, max=max_arg)
+            # clamp mass^2 to avoid inf-inf and negative from numerical noise
+            W0_m2 = torch.clamp(W0_e**2 - W0_p2, min=eps, max=max_arg)
+            W1_m2 = torch.clamp(W1_e**2 - W1_p2, min=eps, max=max_arg)
+            W0_m = torch.sqrt(W0_m2)
+            W1_m = torch.sqrt(W1_m2)
 
             W_phys = torch.stack([
                 W0_px, W0_py, W0_pz,
@@ -246,3 +257,170 @@ class WtoNeutrinoBlock(nn.Module):
 
         return out, logdet
 
+class SelfAttentionBlock(nn.Module):
+    def __init__(self, d_model, nhead, dropout=0.3):
+        super().__init__()
+        self.norm1 = nn.LayerNorm(d_model)
+        self.mha = nn.MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=True)
+        
+        self.norm2 = nn.LayerNorm(d_model)
+        self.ffn = nn.Sequential(
+            nn.Linear(d_model, 2 * d_model),
+            nn.GELU(),
+            nn.Linear(2 * d_model, d_model),
+            nn.Dropout(dropout),
+        )
+
+    def forward(self, x, key_padding_mask=None):
+        res = x
+        x = self.norm1(x)
+        x, _ = self.mha(x, x, x, key_padding_mask=key_padding_mask)
+        x = res + x
+        
+        x = x + self.ffn(self.norm2(x))
+        return x
+    
+class CrossAttentionBlock(nn.Module):
+    def __init__(self, d_model, nhead, dropout=0.3):
+        super().__init__()
+        self.norm_q = nn.LayerNorm(d_model)
+        self.norm_kv = nn.LayerNorm(d_model)
+
+        self.mha = nn.MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=True)
+        
+        self.ffn = nn.Sequential(
+            nn.LayerNorm(d_model),
+            nn.GELU(),
+            nn.Linear(d_model, d_model * 4),
+            nn.Dropout(dropout),
+            nn.GELU(),
+            nn.Linear(d_model * 4, d_model),
+            nn.Dropout(dropout),
+        )
+
+    def forward(self, queries, context, key_padding_mask=None):
+        # 1. Attention Phase
+        res = queries
+        q = self.norm_q(queries)
+        kv = self.norm_kv(context)
+        
+        # attn_out shape: [Batch, 2, d_model]
+        attn_out, _ = self.mha(query=q, key=kv, value=kv, key_padding_mask=key_padding_mask)
+        x = res + attn_out
+        
+        # 2. Feed-Forward Phase
+        x = x + self.ffn(x)
+        return x
+
+class CondNet(nn.Module):
+    def __init__(self, in_channels, out_channels, c_dim, d_model=64, nhead=8, dropout=0.1):
+        super().__init__()
+        if in_channels <= c_dim:
+            raise ValueError(f"in_channels ({in_channels}) must be > c_dim ({c_dim})")
+        if c_dim < 19:
+            raise ValueError(f"c_dim must be >= 19 for [jet0, jet1, jet2, angular, mt], got {c_dim}")
+        if out_channels % 2 != 0:
+            raise ValueError(f"out_channels must be even, got {out_channels}")
+
+        self.c_dim = c_dim
+        # 1. Embedders
+        self.inn_embed = nn.Linear(in_channels - c_dim, d_model)
+        self.jet_embed = nn.Linear(4, d_model)
+        self.dilep_embed = nn.Linear(4, d_model)
+        self.ang_embed = nn.Linear(5, d_model)
+        
+        # 2. Lightweight MHA: inn token queries condition tokens.
+        # self.context_refiner = CrossAttentionBlock(d_model, nhead, dropout=0.1)
+        self.conttext_refiner_lst = nn.ModuleList([CrossAttentionBlock(d_model, nhead, dropout=dropout) for _ in range(2)])
+        
+        # 3. Output Head
+        self.output_head = nn.Sequential(
+            nn.Linear(d_model, d_model),
+            nn.GELU(),
+            nn.Linear(d_model, out_channels)
+        )
+        nn.init.zeros_(self.output_head[-1].weight)
+        nn.init.zeros_(self.output_head[-1].bias)
+
+    def forward(self, x):
+        # Expected x: [inn_half(..), jet0(4), jet1(4), jet2(4), angular(4), mt(3)]
+        x_inn = x[:, :-self.c_dim]
+        x_cond = x[:, -self.c_dim:]
+        batch_size = x.shape[0]
+
+        # --- Step 1: Embedding MLP ---
+        j0 = self.jet_embed(x_cond[:, 0:4])
+        j1 = self.jet_embed(x_cond[:, 4:8])
+        j2 = self.jet_embed(x_cond[:, 8:12])
+        delep = self.dilep_embed(x_cond[:, 12:16])
+        ang = self.ang_embed(x_cond[:, 16:21])
+
+        inn_tok = self.inn_embed(x_inn)
+        
+        # Context tokens are from condition only: [jet0, jet1, jet2, delep, ang]
+        context = torch.stack([j0, j1, j2, delep, ang], dim=1)
+        key_mask = torch.zeros((batch_size, context.shape[1]), dtype=torch.bool, device=x_cond.device)
+        # Mask jet tokens that are exactly zero 4-vectors.
+        key_mask[:, 0] = (torch.abs(x_cond[:, 0:4]).sum(dim=1) == 0)  # Jet 0 token
+        key_mask[:, 1] = (torch.abs(x_cond[:, 4:8]).sum(dim=1) == 0)  # Jet 1 token
+        key_mask[:, 2] = (torch.abs(x_cond[:, 8:12]).sum(dim=1) == 0)  # Jet 2 token
+
+        # --- Step 2: Cross-Attention ---
+        inn_query = inn_tok.unsqueeze(1)  # [B, 1, d_model]
+        for context_refiner in self.conttext_refiner_lst:
+            inn_query = context_refiner(inn_query, context, key_padding_mask=key_mask)
+            # Keep padded jet slots from leaking signal through residual paths.
+            inn_query = context.masked_fill(key_mask.unsqueeze(-1), 0.0)
+            
+        # --- Step 3: Output Head ---
+        # only take out refined inn token
+        outputs = self.output_head(inn_query[:, 0, :])
+        
+        return outputs
+
+class SubNet(nn.Module):
+    def __init__(self, in_channels, out_channels, c_dim, hidden=256, dropout=0.3):
+        super().__init__()
+        self.c_dim = c_dim
+        inn_dim = in_channels - c_dim
+
+        self.inn_norm = nn.LayerNorm(inn_dim)
+        self.cond_norm = nn.LayerNorm(c_dim)
+
+        # feature mapping
+        self.input_proj = nn.Linear(inn_dim, hidden)
+        self.inn_net = nn.Sequential(
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden, hidden),
+            nn.GELU(),
+            nn.Dropout(dropout),
+        )
+        self.out = nn.Linear(hidden, out_channels)
+
+        # conditioning
+        self.cond = nn.Sequential(
+            nn.Linear(c_dim, hidden),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden, 2 * out_channels)
+        )
+
+        # zero initialization
+        nn.init.zeros_(self.out.weight)
+        nn.init.zeros_(self.out.bias)
+        nn.init.zeros_(self.cond[-1].weight)
+        nn.init.zeros_(self.cond[-1].bias)
+
+    def forward(self, x):
+
+        x_inn = self.inn_norm(x[:, :-self.c_dim])
+        x_cond = self.cond_norm(x[:, -self.c_dim:])
+
+        h = self.input_proj(x_inn)
+        h = h + self.inn_net(h)
+        inn_feat = self.out(h)
+
+        gamma, beta = self.cond(x_cond).chunk(2, dim=-1)
+
+        return (1 + gamma) * inn_feat + beta

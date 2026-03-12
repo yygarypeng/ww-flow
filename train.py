@@ -1,11 +1,11 @@
 import os
-import glob
-
+import argparse
+import yaml
 import numpy as np
 
 import torch
 import pytorch_lightning as pl
-from pytorch_lightning.loggers import CSVLogger
+from pytorch_lightning.loggers import CSVLogger, WandbLogger
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
 
 from model import INNLightningModule
@@ -14,37 +14,61 @@ from data_module import WBosonDataModule
 import load_data as data
 
 
-# ====== Hyperparameters ======
-BATCH_SIZE = 512
-EPOCHS = 512 # maximum epochs (use large enough), have put the early stopping callback
-LEARNING_RATE = 1e-5
-NUM_BLOCKS = 6
-LACK_DIM = 6 # number of lacking constraints
-LOSS_WEIGHTS = {
-    "L_y": 10.0,
-	"L_z": 100.0, 
-	"L_x": 200.0, 
-	"L_pad": 1.0,
-	# complementary losses 
-	"L_higgs": 0.1,
-	"L_y_mmd": 0.0,
-	"L_neu_mass": 0.0
-} # weights for different loss components
+# # ====== Hyperparameters ======
+
+# NUM_BLOCKS = 32
+# OBS_DIM = 10 # observed variables dimension (2 lep + met)
+
+# LOSS_WEIGHTS = {
+# 	"L_x": 20.0,  # W-part
+#     "L_y": 50.0,  # lep-part
+# 	"L_z": 30.0,  # N(0, 1) sampling part
+# 	"L_pad": 1.0, # padding part (if any)
+# 	#  customized losses
+# 	"L_W": 20.0,     # derived mass of W bosons
+# 	"L_higgs": 10.0, # derived mass of Higgs boson
+# 	"L_neu_mass": 0.0,
+# 	# monitoring losses
+# 	"L_x_huber": 0.0
+# } # weights for different loss components
 
 
 # ===== Pathes ======
 # data_path = "/root/data/mc20_truth_v4_SM.h5"
-data_path = "/root/data/danning_h5/ypeng/mc20_qe_v4_recotruth_merged.h5"
-project_name = "hww_inn_regressor"
-ckpt_path = glob.glob(f"/root/work/ww-flow/logs/{project_name}")
-    
+# data_path = "/root/data/danning_h5/ypeng/mc20_qe_v4_recotruth_merged.h5"
+# project_name = "hww_inn_regressor"
+# ckpt_path = f"/root/work/ww-flow/logs/{project_name}"
+
+# ====== Load config ======
+def load_config(config_path="config.yaml"):
+    if not os.path.exists(config_path):
+        raise FileNotFoundError(f"Config file not found at: {config_path}")
+
+    with open(config_path, 'r') as file:
+        config = yaml.safe_load(file)
+    return config
 
 # ===== Main ======
 def main(train=True):
+	# ---------- load config ----------
+	_cfg = load_config()
+	_param = _cfg["parameters"]
+	BATCH_SIZE = _param["batch_size"]
+	EPOCHS = _param["epochs"]
+	LEARNING_RATE = _param["learning_rate"]
+	LOSS_WEIGHTS = _param["loss_weights"]
+	NUM_BLOCKS = _param["num_blocks"]
+	OBS_DIM = _param["obs_dim"]
+	LACK_DIM = _param["lack_dim"]
+
+	data_path = _cfg["paths"]["data_path"]
+	project_name = _cfg["paths"]["project_name"]
+	ckpt_path = _cfg["paths"]["ckpt_path"] + project_name
+
 	if train is True:
-		if len(ckpt_path) > 0:
-			print(f"Found existing checkpoint at {ckpt_path[0]}, deleting entire folder...")
-			os.system(f"rm -rf {ckpt_path[0]}")
+		if os.path.exists(ckpt_path):
+			print(f"Found existing checkpoint at {ckpt_path}, deleting entire folder...")
+			os.system(f"rm -rf {ckpt_path}")
 		else:
 			print("No existing checkpoint found, starting fresh...")
 	else:
@@ -55,11 +79,12 @@ def main(train=True):
 	llvv, ww = data.load_data(data_path) # llvv, WW
 	X = ww.astype(np.float32)
 	Y = llvv.astype(np.float32)
+	# get transformation info (del later) 
 	dm = WBosonDataModule(
 		X, Y,
 		batch_size=BATCH_SIZE,
-		val_frac=0.1,
-		test_frac=0.1,
+		val_frac=0.05,
+		test_frac=0.05,
 	)
 	dm.setup()
 	ww_scaler = dm.std_ds.scaler_X
@@ -68,14 +93,15 @@ def main(train=True):
 	dm = WBosonDataModule(
 			X[..., :8], Y[..., :],
 			batch_size=BATCH_SIZE,
-			val_frac=0.1,
-			test_frac=0.1,
+			val_frac=0.05,
+			test_frac=0.05,
 		)
-	ww_dim = X[..., :8].shape[1] # (N, 8) # 
-	#  only access lep+- and met; others are used as cond variables
+	ww_dim = X[..., :8].shape[1] # (N, 8) NO NEUTRINOS
+	#  only access lep+-; others are used as cond variables
 	inputs_dim = Y[..., :].shape[1]
-	y_dim = 10 # dimension of y (observed variables)
+	y_dim = OBS_DIM # dimension of y (observed variables)
 	c_dim =inputs_dim - y_dim  # conditioning dimension
+	# c_dim = inputs_dim
 	lack_dim = LACK_DIM # number of lacking constraints
 	assert lack_dim % 2 == 0, "lack_dim must be even"
 	# https://arxiv.org/abs/1808.04730
@@ -86,12 +112,12 @@ def main(train=True):
 		print(f"internal_dim: {y_dim + lack_dim}")
 		print(f"Expected subnet in_dim during forward pass: {(y_dim + lack_dim) // 2} + {c_dim} = {(y_dim + lack_dim) // 2 + c_dim}")
 		model = INNLightningModule(
-			x_dim=ww_dim, inputs_dim=inputs_dim, 
+			x_dim=ww_dim, inputs_dim=inputs_dim,
 			internal_dim=y_dim + lack_dim,
 			y_dim=y_dim, z_dim=lack_dim, c_dim=c_dim,
 			ww_scaler=ww_scaler, lvlv_scaler=lvlv_scaler,
 			num_blocks=NUM_BLOCKS, lr=LEARNING_RATE,
-			loss_weights=LOSS_WEIGHTS
+			loss_weights=LOSS_WEIGHTS,
 		)
 
 		ckpt = ModelCheckpoint(
@@ -100,26 +126,53 @@ def main(train=True):
 			save_top_k=1, # only save the best model
 			filename="reg-{epoch:02d}-{val_loss:.2f}"
 		)
+
 		early_stopping = EarlyStopping(
 			monitor="val_loss",
-			patience=32,
+			patience=128,
 			mode="min",
 			verbose=False
 		)
-		trainer = pl.Trainer(
-			max_epochs=EPOCHS, 
-			accelerator="gpu", 
-			devices="auto", 
-			callbacks=[ckpt, early_stopping], 
-			logger=CSVLogger("logs", name=project_name),
+
+		csv_logger = CSVLogger(
+			save_dir=ckpt_path,
+			name="log",
 		)
-		trainer.fit(model, dm)
+
+		if args.wandb:
+			wandb_logger = WandbLogger(
+				project=project_name,
+				name="log",
+				save_dir=ckpt_path,
+				log_model=True,
+			)
+
+			wandb_logger.watch(model, log="all", log_freq=500, log_graph=False)
+
+		trainer = pl.Trainer(
+			max_epochs=EPOCHS,
+			accelerator="gpu" if torch.cuda.is_available() else "cpu",
+			devices=1 if torch.cuda.is_available() else None,
+			callbacks=[ckpt, early_stopping],
+			logger=[csv_logger, wandb_logger] if args.wandb else [csv_logger],
+			log_every_n_steps=500,
+			enable_progress_bar=True
+		)
+
+		trainer.fit(model, datamodule=dm)
+		if args.wandb:
+			wandb_logger.experiment.finish()
 	else:
 		print("Loading model from checkpoint for evaluation... return datamodule")
 		return dm # use the same random sample for splitting data in datamodule
 
 if __name__ == "__main__":
     from time import time
+    
+    argparser = argparse.ArgumentParser()
+    argparser.add_argument('--wandb', '-w', action='store_true', help='Enable wandb logging and training mode')
+    args = argparser.parse_args()
+    
     start = time()
     main()
     end = time()
