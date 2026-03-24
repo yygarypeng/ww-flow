@@ -101,6 +101,8 @@ def load_data(data_path):
         # all training mass-like objects are in GeV unit
         
         train_obj = np.concatenate([
+            # total 10 + 22 = 32 features for training (input to the model)
+            # for y (observed variables)
             col(lep_pos_px), #0
             col(lep_pos_py), #1
             col(lep_pos_pz), #2
@@ -111,7 +113,7 @@ def load_data(data_path):
             col(lep_neg_energy), #7
             col(met_px), #8
             col(met_py), #9
-            #  for conditional net
+            # for cond (conditional variables)
             col(jet_px[:, 0]), #0
             col(jet_py[:, 0]), #1
             col(jet_pz[:, 0]), #2

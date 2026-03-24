@@ -14,31 +14,6 @@ from data_module import WBosonDataModule
 import load_data as data
 
 
-# # ====== Hyperparameters ======
-
-# NUM_BLOCKS = 32
-# OBS_DIM = 10 # observed variables dimension (2 lep + met)
-
-# LOSS_WEIGHTS = {
-# 	"L_x": 20.0,  # W-part
-#     "L_y": 50.0,  # lep-part
-# 	"L_z": 30.0,  # N(0, 1) sampling part
-# 	"L_pad": 1.0, # padding part (if any)
-# 	#  customized losses
-# 	"L_W": 20.0,     # derived mass of W bosons
-# 	"L_higgs": 10.0, # derived mass of Higgs boson
-# 	"L_neu_mass": 0.0,
-# 	# monitoring losses
-# 	"L_x_huber": 0.0
-# } # weights for different loss components
-
-
-# ===== Pathes ======
-# data_path = "/root/data/mc20_truth_v4_SM.h5"
-# data_path = "/root/data/danning_h5/ypeng/mc20_qe_v4_recotruth_merged.h5"
-# project_name = "hww_inn_regressor"
-# ckpt_path = f"/root/work/ww-flow/logs/{project_name}"
-
 # ====== Load config ======
 def load_config(config_path="config.yaml"):
     if not os.path.exists(config_path):
@@ -60,6 +35,10 @@ def main(train=True):
 	NUM_BLOCKS = _param["num_blocks"]
 	OBS_DIM = _param["obs_dim"]
 	LACK_DIM = _param["lack_dim"]
+	NUM_WORKERS = _param.get("num_workers", 0)
+	PERSISTENT_WORKERS = _param.get("persistent_workers", False)
+	PIN_MEMORY = _param.get("pin_memory", torch.cuda.is_available())
+	PREFETCH_FACTOR = _param.get("prefetch_factor", 2)
 
 	data_path = _cfg["paths"]["data_path"]
 	project_name = _cfg["paths"]["project_name"]
@@ -85,6 +64,10 @@ def main(train=True):
 		batch_size=BATCH_SIZE,
 		val_frac=0.05,
 		test_frac=0.05,
+		num_workers=NUM_WORKERS,
+		persistent_workers=PERSISTENT_WORKERS,
+		pin_memory=PIN_MEMORY,
+		prefetch_factor=PREFETCH_FACTOR,
 	)
 	dm.setup()
 	ww_scaler = dm.std_ds.scaler_X
@@ -94,7 +77,11 @@ def main(train=True):
 			X[..., :8], Y[..., :],
 			batch_size=BATCH_SIZE,
 			val_frac=0.05,
-			test_frac=0.05,
+			test_frac=0.01,
+			num_workers=NUM_WORKERS,
+			persistent_workers=PERSISTENT_WORKERS,
+			pin_memory=PIN_MEMORY,
+			prefetch_factor=PREFETCH_FACTOR,
 		)
 	ww_dim = X[..., :8].shape[1] # (N, 8) NO NEUTRINOS
 	#  only access lep+-; others are used as cond variables

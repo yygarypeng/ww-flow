@@ -47,9 +47,8 @@ class INN(nn.Module):
         # condition node
         cond_node = Ff.ConditionNode(c_dim, name='Condition')
         
-
         # Add coupling blocks
-        def subnet_constructor(in_channels, out_channels, c_dim=self.c_dim, d_model=64, nhead=8, dropout=0.2):
+        def subnet_constructor(in_channels, out_channels, c_dim=self.c_dim, d_model=256, nhead=16, dropout=0.1):
             return CondNet(in_channels=in_channels, out_channels=out_channels, c_dim=c_dim, d_model=d_model, nhead=nhead, dropout=dropout)
         
         for i in range(num_blocks):
@@ -76,49 +75,49 @@ class INN(nn.Module):
     def forward(self, input, cond, target=None, reverse=False):
         batch_size = input.shape[0]
         device = input.device
-        logdet_total = torch.zeros(batch_size, device=device)
+        # logdet_total = torch.zeros(batch_size, device=device)
 
         if not reverse:
             assert target is not None
             assert cond is not None
             
             # ----- Forward -----
-            phy_out, phy_logdet = self.phys(
+            phy_out, _ = self.phys(
                 input,
                 target[:, :8],
                 reverse=False
             )
-            logdet_total += phy_logdet
+            # logdet_total += phy_logdet
 
             x = torch.cat([
                 phy_out,
                 torch.zeros(batch_size, self.input_pad, device=device)
             ], dim=1) # with size (batch_size, internal_dim)
-            output, logdet_flow = self.flow(x, c=cond, rev=False)
-            logdet_total += logdet_flow
+            output, _ = self.flow(x, c=cond, rev=False)
+            # logdet_total += logdet_flow
 
             y = output[:, :self.y_dim]
             z = output[:, self.y_dim:]
-            return (y, z), logdet_total
+            return (y, z)
 
         else:
             assert cond is not None
         
             # ----- Reverse -----
-            output, logdet_flow = self.flow(input, c=cond, rev=True)
-            logdet_total += logdet_flow
+            output, _ = self.flow(input, c=cond, rev=True)
+            # logdet_total += logdet_flow
 
-            recon, phy_logdet = self.phys(
+            recon, _ = self.phys(
                 input[:, :8],
                 output[:, :self.x_dim],
                 reverse=True
             )
-            logdet_total += phy_logdet
+            # logdet_total += phy_logdet
 
             pad = output[:, self.x_dim:]
 
             x_out = torch.cat([recon, pad], dim=1)
-            return x_out, logdet_total
+            return x_out
 
 
 class INNLightningModule(pl.LightningModule):
@@ -144,17 +143,20 @@ class INNLightningModule(pl.LightningModule):
             ww_scaler, lvlv_scaler,
         )
 
-        self.loss_weights = loss_weights or {
+        default_loss_weights = {
             "L_x": 1.0,
             "L_y": 1.0,
             "L_z": 1.0,
             "L_pad": 1.0,
+            "L_pad_noise": 1.0,
+            "L_x_gen": 0.0,
             # physical losses
             "L_W": 0.0,
             "L_x_huber": 0.0,
             "L_higgs": 0.0,
             "L_neu_mass": 0.0,
         }
+        self.loss_weights = loss_weights or default_loss_weights
 
     def forward(self, x, cond, target=None, reverse=False):
         return self.inn(x, cond, target=target, reverse=reverse)
@@ -164,15 +166,27 @@ class INNLightningModule(pl.LightningModule):
         x, y_true = batch # without padding on x; sampling z on y
         cond = y_true[:, self.hparams.y_dim:]  # conditioning variables
         y_true = y_true[:, :self.hparams.y_dim]
-        (y_pred, z_pred), logdet = self(x, cond, target=y_true, reverse=False)  # Forward pass (full graph for L_y)
+        (y_pred, z_pred) = self(x, cond, target=y_true, reverse=False)  # Forward pass (full graph for L_y)
         z_sample = torch.randn_like(z_pred)  # random sample from N(0,1) ... generative mode
         yz = torch.cat([y_true, z_sample], dim=1)
         yz_pred = torch.cat([y_pred.detach(), z_pred], dim=1)
-        x_recon, logdet_inv = self(yz, cond, target=None, reverse=True)
+        x_recon = self(yz, cond, target=None, reverse=True)
+
+        # Reverse consistency on generated samples (paper-style: block gradient to y branch)
+        yz_gen = torch.cat([y_pred, z_sample], dim=1)
+        x_gen_recon = self(yz_gen, cond, target=None, reverse=True)
+
+        # noisy-padding (ensure 0, and noise can give the same outcomes)
+        x_recon_noisy, _ = self.inn.flow(yz_gen, c=cond, rev=True) # x'
+        x_recon_nopad = x_recon[:, :-(self.inn.input_pad+2)] # not include neutrino masses part
+        pad_std = x_recon_nopad.detach().std(dim=0)
+        noise_scale = pad_std.mean() + 1e-8 # protect against zero std
+        x_recon_noisy[:, -self.inn.input_pad:] = torch.randn_like(x_recon_noisy[:, -self.inn.input_pad:]) * noise_scale
+        yz_from_noisy_pad, _ = self.inn.flow(x_recon_noisy, c=cond, rev=False)
         
         # losses (paper Sec. 3.3)
         L_x = mmd_loss(
-            x_recon[:, :-self.inn.input_pad-2], 
+            x_recon[:, :-(self.inn.input_pad+2)], 
             x[:, :-2]
         ) # not include W masses
         L_y = F.huber_loss(
@@ -184,8 +198,10 @@ class INNLightningModule(pl.LightningModule):
             yz_pred, 
             yz
         )
-        # Penalize non-zero padding
-        L_pad = (torch.abs(x_recon[:, -self.inn.input_pad:])).mean()
+        # Penalize non-zero padding and noisy padding (sec 3.3)
+        L_pad = (torch.square(x_recon[:, -self.inn.input_pad:])).mean()
+        L_pad_noise = F.huber_loss(yz_from_noisy_pad, torch.cat([y_pred.detach(), z_pred.detach()], dim=1))
+        
         # additional physical losses
         L_w = mmd_loss(
             x_recon[:, -2-self.inn.input_pad:-self.inn.input_pad], 
@@ -203,15 +219,21 @@ class INNLightningModule(pl.LightningModule):
             y_dim=self.hparams.y_dim
         )
         L_x_huber = F.huber_loss(
-            x_recon[:, :-self.inn.input_pad-2], 
+            x_recon[:, :-(self.inn.input_pad+2)], 
             x[:, :-2]
-        ) # not include W masses
+        ) # not include neutrino masses
+        L_x_gen = F.huber_loss(
+            x_gen_recon[:, :-(self.inn.input_pad+2)],
+            x[:, :-2]
+        )
         
         return {
             "L_x": L_x,
             "L_y": L_y,
             "L_z": L_z,
             "L_pad": L_pad,
+            "L_pad_noise": L_pad_noise,
+            "L_x_gen": L_x_gen,
             "L_W": L_w,
             "L_higgs": L_higgs,
             "L_neu_mass": L_neu_mass,
@@ -221,10 +243,12 @@ class INNLightningModule(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         losses = self._shared_step(batch)
-        loss = self.loss_weights["L_x"] * losses["L_x"] + \
+        loss = self.loss_weights["L_x"] * losses["L_x"] \
             + self.loss_weights["L_y"] * losses["L_y"] \
             + self.loss_weights["L_z"] * losses["L_z"] \
             + self.loss_weights["L_pad"] * losses["L_pad"] \
+            + self.loss_weights["L_pad_noise"] * losses["L_pad_noise"] \
+            + self.loss_weights["L_x_gen"] * losses["L_x_gen"] \
             + self.loss_weights["L_W"] * losses["L_W"] \
             + self.loss_weights["L_higgs"] * losses["L_higgs"] \
             + self.loss_weights["L_neu_mass"] * losses["L_neu_mass"] \
@@ -236,6 +260,8 @@ class INNLightningModule(pl.LightningModule):
             "L_y": losses["L_y"].detach(), 
             "L_z": losses["L_z"].detach(), 
             "L_pad": losses["L_pad"].detach(),
+            "L_pad_noise": losses["L_pad_noise"].detach(),
+            "L_x_gen": losses["L_x_gen"].detach(),
             "L_W": losses["L_W"].detach(),
             "L_higgs": losses["L_higgs"].detach(),  
             "L_neu_mass": losses["L_neu_mass"].detach(),
@@ -251,6 +277,8 @@ class INNLightningModule(pl.LightningModule):
             + self.loss_weights["L_y"] * losses["L_y"] \
             + self.loss_weights["L_z"] * losses["L_z"] \
             + self.loss_weights["L_pad"] * losses["L_pad"] \
+            + self.loss_weights["L_pad_noise"] * losses["L_pad_noise"] \
+            + self.loss_weights["L_x_gen"] * losses["L_x_gen"] \
             + self.loss_weights["L_W"] * losses["L_W"] \
             + self.loss_weights["L_higgs"] * losses["L_higgs"] \
             + self.loss_weights["L_neu_mass"] * losses["L_neu_mass"] \
@@ -262,6 +290,8 @@ class INNLightningModule(pl.LightningModule):
             "val_L_y": losses["L_y"].detach(), 
             "val_L_z": losses["L_z"].detach(), 
             "val_L_pad": losses["L_pad"].detach(), 
+            "val_L_pad_noise": losses["L_pad_noise"].detach(),
+            "val_L_x_gen": losses["L_x_gen"].detach(),
             "val_L_W": losses["L_W"].detach(),
             "val_L_higgs": losses["L_higgs"].detach(),
             "val_L_neu_mass": losses["L_neu_mass"].detach(),
@@ -269,5 +299,5 @@ class INNLightningModule(pl.LightningModule):
         }, on_step=False, on_epoch=True, prog_bar=True)
 
     def configure_optimizers(self):
-        optimizer = optim.AdamW(self.parameters(), lr=self.hparams.lr, weight_decay=1e-4)
+        optimizer = optim.AdamW(self.parameters(), lr=self.hparams.lr, weight_decay=1e-5)
         return optimizer

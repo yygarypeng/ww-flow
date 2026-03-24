@@ -31,7 +31,7 @@ class WBosonDataModule(L.LightningDataModule):
         batch_size=512,
         val_frac=0.1,
         test_frac=0.1,
-        num_workers=4,
+        num_workers=0,
         persistent_workers=False,
         pin_memory=True,
         prefetch_factor=2,
@@ -48,7 +48,7 @@ class WBosonDataModule(L.LightningDataModule):
             print(f"Setting num_workers to {self.num_workers}")
         else:
             self.num_workers = num_workers
-            print(f"Using {self.num_workers} num oof workers in data loading.")
+            print(f"Using {self.num_workers} workers in data loading.")
             
         self.val_frac = val_frac
         self.test_frac = test_frac

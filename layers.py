@@ -2,157 +2,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-class DenseDropoutBlock(nn.Module):
-    """
-    Pre-activation block:
-        BN(in_dim) -> GELU -> Linear(in_dim -> out_dim) -> Dropout
-    """
-    def __init__(self, in_dim, out_dim, dropout=0.0):
-        super().__init__()
-        self.norm = nn.LayerNorm(in_dim)
-        self.act = nn.GELU()
-        self.fc = nn.Linear(in_dim, out_dim)
-        self.drop = nn.Dropout(dropout) if dropout and dropout > 0 else nn.Identity()
-
-    def forward(self, x):
-        y = self.norm(x)
-        y = self.act(y)
-        y = self.fc(y)
-        y = self.drop(y)
-        return y
-
-class ResidualBlock(nn.Module):
-    def __init__(self, in_dim, out_dim, dropout=0.3):
-        super().__init__()
-
-        # projection only when needed
-        self.proj = nn.Linear(in_dim, out_dim, bias=False) if in_dim != out_dim else nn.Identity()
-
-        # two pre-activation dense blocks
-        self.block1 = DenseDropoutBlock(in_dim, out_dim, dropout)
-        self.block2 = DenseDropoutBlock(out_dim, out_dim, dropout)
-
-    def forward(self, x):
-        identity = self.proj(x)
-        y = self.block1(x)
-        y = self.block2(y)
-        return identity + y
-
-class SNet(nn.Module):
-    def __init__(self, half, hidden_dim):
-        super().__init__()
-
-        self.input_layer = nn.Linear(half, hidden_dim // 2)
-        self.res1 = ResidualBlock(hidden_dim // 2, hidden_dim)
-        self.res2 = ResidualBlock(hidden_dim, hidden_dim)
-        self.proj = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim // 2),
-            nn.GELU(),
-            nn.Linear(hidden_dim // 2, half),
-            nn.Tanh()   # keep scale bounded
-        )
-
-    def forward(self, x):
-        x = self.input_layer(x)
-        x = self.res1(x)
-        x = self.res2(x)
-        x = self.res2(x)
-        x = self.proj(x)
-        return x # scale output to [-1, 1]
-
-class TNet(nn.Module):
-    def __init__(self, half, hidden_dim):
-        super().__init__()
-
-        self.input_layer = nn.Linear(half, hidden_dim // 2)
-        self.res1 = ResidualBlock(hidden_dim // 2, hidden_dim)
-        self.res2 = ResidualBlock(hidden_dim, hidden_dim)
-        self.proj = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim // 2),
-            nn.GELU(),
-            nn.Linear(hidden_dim // 2, half),
-        )
-
-    def forward(self, x):
-        x = self.input_layer(x)
-        x = self.res1(x)
-        x = self.res2(x)
-        x = self.res2(x)
-        x = self.proj(x)
-        return x
-
-class AffineCoupling(nn.Module):
-    # single affine coupling: transforms second half conditioned on first half (or vice versa)
-    def __init__(self, dim, hidden_dim, mask='left'):
-        super().__init__()
-        self.mask = mask  # 'left' or 'right'
-        half = dim // 2
-        # scale and translate nets: input is conditioning half -> output is half-dim
-        self.s_net = SNet(half, hidden_dim)
-        self.t_net = TNet(half, hidden_dim)
-
-    def forward(self, x, reverse=False):
-        # split
-        d = x.shape[1] # dim of input (W,W)
-        h = d // 2
-        if self.mask == 'left':
-            x1, x2 = x[:, :h], x[:, h:]
-            cond, transform = x1, x2
-        else:
-            x1, x2 = x[:, :h], x[:, h:]
-            cond, transform = x2, x1
-
-        s = self.s_net(cond)
-        t = self.t_net(cond)
-        if not reverse:
-            y2 = transform * torch.exp(s) + t
-            logdet = s.sum(dim=1)
-        else:
-            # inverse
-            y2 = (transform - t) * torch.exp(-s)
-            logdet = (-s).sum(dim=1)
-
-        if self.mask == 'left':
-            out = torch.cat([cond, y2], dim=1)
-        else:
-            out = torch.cat([y2, cond], dim=1)
-
-        return out, logdet
-    
-class ReversibleBlock(nn.Module):
-    def __init__(self, dim, hidden_dim):
-        super().__init__()
-        self.coup1 = AffineCoupling(dim, hidden_dim, mask='left')
-        self.coup2 = AffineCoupling(dim, hidden_dim, mask='right')
-
-    def forward(self, x, reverse=False):
-        logdet = torch.zeros(x.shape[0], device=x.device)
-        if not reverse:
-            x, ld = self.coup1(x, reverse=False)
-            logdet = logdet + ld
-            x, ld = self.coup2(x, reverse=False)
-            logdet = logdet + ld
-        else:
-            x, ld = self.coup2(x, reverse=True)
-            logdet = logdet + ld
-            x, ld = self.coup1(x, reverse=True)
-            logdet = logdet + ld
-        return x, logdet
-
-class Permutation(nn.Module):
-    def __init__(self, dim, seed=114):
-        super().__init__()
-        g = torch.Generator().manual_seed(seed)
-        self.perm = torch.randperm(dim, generator=g)
-        self.inv_perm = self.perm.argsort()
-
-    def forward(self, x, reverse=False):
-        if reverse:
-            return x[:, self.inv_perm], torch.zeros(x.shape[0], device=x.device)
-        else:
-            return x[:, self.perm], torch.zeros(x.shape[0], device=x.device)
-
-
 class WtoNeutrinoBlock(nn.Module):
     """
     Physics-based reversible block:
@@ -260,24 +109,22 @@ class WtoNeutrinoBlock(nn.Module):
 class SelfAttentionBlock(nn.Module):
     def __init__(self, d_model, nhead, dropout=0.3):
         super().__init__()
-        self.norm1 = nn.LayerNorm(d_model)
+        self.norm = nn.LayerNorm(d_model)
         self.mha = nn.MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=True)
         
-        self.norm2 = nn.LayerNorm(d_model)
         self.ffn = nn.Sequential(
-            nn.Linear(d_model, 2 * d_model),
+            nn.LayerNorm(d_model),
             nn.GELU(),
-            nn.Linear(2 * d_model, d_model),
-            nn.Dropout(dropout),
+            nn.Linear(d_model, d_model),
         )
 
     def forward(self, x, key_padding_mask=None):
         res = x
-        x = self.norm1(x)
+        x = self.norm(x)
         x, _ = self.mha(x, x, x, key_padding_mask=key_padding_mask)
         x = res + x
         
-        x = x + self.ffn(self.norm2(x))
+        x = x + self.ffn(x)
         return x
     
 class CrossAttentionBlock(nn.Module):
@@ -291,34 +138,28 @@ class CrossAttentionBlock(nn.Module):
         self.ffn = nn.Sequential(
             nn.LayerNorm(d_model),
             nn.GELU(),
-            nn.Linear(d_model, d_model * 4),
-            nn.Dropout(dropout),
-            nn.GELU(),
-            nn.Linear(d_model * 4, d_model),
-            nn.Dropout(dropout),
+            nn.Linear(d_model, d_model),
         )
 
     def forward(self, queries, context, key_padding_mask=None):
-        # 1. Attention Phase
         res = queries
         q = self.norm_q(queries)
         kv = self.norm_kv(context)
         
-        # attn_out shape: [Batch, 2, d_model]
         attn_out, _ = self.mha(query=q, key=kv, value=kv, key_padding_mask=key_padding_mask)
         x = res + attn_out
         
-        # 2. Feed-Forward Phase
         x = x + self.ffn(x)
         return x
 
 class CondNet(nn.Module):
-    def __init__(self, in_channels, out_channels, c_dim, d_model=64, nhead=8, dropout=0.1):
+    # TODO: rethink abt is it proper to use HL(y)
+    def __init__(self, in_channels, out_channels, c_dim, d_model=64, nhead=8, dropout=0.2):
         super().__init__()
         if in_channels <= c_dim:
             raise ValueError(f"in_channels ({in_channels}) must be > c_dim ({c_dim})")
-        if c_dim < 19:
-            raise ValueError(f"c_dim must be >= 19 for [jet0, jet1, jet2, angular, mt], got {c_dim}")
+        # if c_dim < 21:
+        #     raise ValueError(f"c_dim must be >= 21 for [jet0, jet1, jet2, dilep, ang], got {c_dim}")
         if out_channels % 2 != 0:
             raise ValueError(f"out_channels must be even, got {out_channels}")
 
@@ -330,12 +171,12 @@ class CondNet(nn.Module):
         self.ang_embed = nn.Linear(5, d_model)
         
         # 2. Lightweight MHA: inn token queries condition tokens.
-        # self.context_refiner = CrossAttentionBlock(d_model, nhead, dropout=0.1)
-        self.conttext_refiner_lst = nn.ModuleList([CrossAttentionBlock(d_model, nhead, dropout=dropout) for _ in range(2)])
+        self.input_refiner_lst = nn.ModuleList([SelfAttentionBlock(d_model, nhead, dropout=dropout) for _ in range(1)])
+        self.context_refiner_lst = nn.ModuleList([CrossAttentionBlock(d_model, nhead, dropout=dropout) for _ in range(1)])
         
         # 3. Output Head
         self.output_head = nn.Sequential(
-            nn.Linear(d_model, d_model),
+            nn.LayerNorm(d_model),
             nn.GELU(),
             nn.Linear(d_model, out_channels)
         )
@@ -343,7 +184,7 @@ class CondNet(nn.Module):
         nn.init.zeros_(self.output_head[-1].bias)
 
     def forward(self, x):
-        # Expected x: [inn_half(..), jet0(4), jet1(4), jet2(4), angular(4), mt(3)]
+        # Expected x: [inn_half(..), jet0(4), jet1(4), jet2(4), dilep(4), ang(5)]
         x_inn = x[:, :-self.c_dim]
         x_cond = x[:, -self.c_dim:]
         batch_size = x.shape[0]
@@ -357,70 +198,31 @@ class CondNet(nn.Module):
 
         inn_tok = self.inn_embed(x_inn)
         
-        # Context tokens are from condition only: [jet0, jet1, jet2, delep, ang]
-        context = torch.stack([j0, j1, j2, delep, ang], dim=1)
+        # Context tokens are from condition only: [jet0, jet1, jet2, dilep, ang]
+        context = torch.stack([j0, j1, j2, delep, ang], dim=1) # TODO: position info (!)
+        # context = torch.stack([j0, j1, j2], dim=1)
+        inn_query = inn_tok.unsqueeze(1)  # [B, 1, d_model]
         key_mask = torch.zeros((batch_size, context.shape[1]), dtype=torch.bool, device=x_cond.device)
         # Mask jet tokens that are exactly zero 4-vectors.
         key_mask[:, 0] = (torch.abs(x_cond[:, 0:4]).sum(dim=1) == 0)  # Jet 0 token
         key_mask[:, 1] = (torch.abs(x_cond[:, 4:8]).sum(dim=1) == 0)  # Jet 1 token
-        key_mask[:, 2] = (torch.abs(x_cond[:, 8:12]).sum(dim=1) == 0)  # Jet 2 token
+        key_mask[:, 2] = (torch.abs(x_cond[:, 8:12]).sum(dim=1) == 0) # Jet 2 token
 
-        # --- Step 2: Cross-Attention ---
-        inn_query = inn_tok.unsqueeze(1)  # [B, 1, d_model]
-        for context_refiner in self.conttext_refiner_lst:
-            inn_query = context_refiner(inn_query, context, key_padding_mask=key_mask)
+        # --- Step 2: SA and CA ---
+        # for input_refiner in self.input_refiner_lst:
+        #     context = input_refiner(context, key_padding_mask=key_mask)
+        #     # Keep padded jet slots from leaking signal through residual paths.
+        #     context = context.masked_fill(key_mask.unsqueeze(-1), 0.0)
+        # for context_refiner in self.context_refiner_lst:
+        #     inn_query = context_refiner(inn_query, context, key_padding_mask=key_mask)
+        for input_refiner, context_refiner in zip(self.input_refiner_lst, self.context_refiner_lst):
+            context = input_refiner(context, key_padding_mask=key_mask)
             # Keep padded jet slots from leaking signal through residual paths.
-            inn_query = context.masked_fill(key_mask.unsqueeze(-1), 0.0)
+            context = context.masked_fill(key_mask.unsqueeze(-1), 0.0)
+            inn_query = context_refiner(inn_query, context, key_padding_mask=key_mask)
             
         # --- Step 3: Output Head ---
         # only take out refined inn token
         outputs = self.output_head(inn_query[:, 0, :])
         
         return outputs
-
-class SubNet(nn.Module):
-    def __init__(self, in_channels, out_channels, c_dim, hidden=256, dropout=0.3):
-        super().__init__()
-        self.c_dim = c_dim
-        inn_dim = in_channels - c_dim
-
-        self.inn_norm = nn.LayerNorm(inn_dim)
-        self.cond_norm = nn.LayerNorm(c_dim)
-
-        # feature mapping
-        self.input_proj = nn.Linear(inn_dim, hidden)
-        self.inn_net = nn.Sequential(
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden, hidden),
-            nn.GELU(),
-            nn.Dropout(dropout),
-        )
-        self.out = nn.Linear(hidden, out_channels)
-
-        # conditioning
-        self.cond = nn.Sequential(
-            nn.Linear(c_dim, hidden),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden, 2 * out_channels)
-        )
-
-        # zero initialization
-        nn.init.zeros_(self.out.weight)
-        nn.init.zeros_(self.out.bias)
-        nn.init.zeros_(self.cond[-1].weight)
-        nn.init.zeros_(self.cond[-1].bias)
-
-    def forward(self, x):
-
-        x_inn = self.inn_norm(x[:, :-self.c_dim])
-        x_cond = self.cond_norm(x[:, -self.c_dim:])
-
-        h = self.input_proj(x_inn)
-        h = h + self.inn_net(h)
-        inn_feat = self.out(h)
-
-        gamma, beta = self.cond(x_cond).chunk(2, dim=-1)
-
-        return (1 + gamma) * inn_feat + beta

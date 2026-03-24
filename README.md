@@ -1,255 +1,192 @@
 # ww-flow
 
-Flow-based model to reconstruct W boson rest frames using Invertible Neural Networks (INN).
+Flow-based reconstruction of $H \to WW^\ast \to \ell\nu\ell\nu$ kinematics with an invertible neural network.
 
-contact: [Yuan-Yen Peng](yuan-yen.peng@cern.ch)
+Contact: [Yuan-Yen Peng](mailto:yuan-yen.peng@cern.ch)
 
 ## Overview
 
-This project implements a machine learning method to reconstruct full lepton info in the W boson rest frames in $H \to WW^\ast \to \ell\nu\ell\nu$ using flow-based models. The challenge of reconstruction is the hardly detectable neutrinos. The model learns to map from observed particle momenta (leptons, missing energy, jets) in reco-level MC20 data to the true W boson four-momenta in their rest frames.
+This repository trains a conditional INN to map between reconstructed event observables and truth-level $W$ boson kinematics.
 
-## Project Structure
+The current model uses two stages:
 
-### Core Files
+1. A physics block converts between $W$ bosons and neutrinos using lepton four-vectors and the massless-neutrino constraint.
+2. A conditional normalizing flow models the remaining under-constrained degrees of freedom with latent variables.
 
-#### [data_module.py](data_module.py)
-**Purpose**: PyTorch Lightning data handling and preprocessing
+The training setup is now config-driven via [config.yaml](config.yaml), not hard-coded in [train.py](train.py).
 
-**Key Components**:
-- `ArrayDataset_StdNorm`: Custom Dataset class that standardizes input and output data using `StandardScaler`
-  - Normalizes X and Y independently
-  - Returns normalized tensors for training
-  
-- `WBosonDataModule`: PyTorch Lightning DataModule for efficient data loading
-  - Splits data into train/validation/test sets (80%/10%/10%)
-  - Configurable batch size (default: 512)
-  - Multi-worker data loading with automatic CPU optimization
-  - Stores scalers for later inverse transformation
+## Current Setup
 
-**How it works**:
-1. Receives raw numpy arrays X ($WW^\ast$) and Y ($\ell\ell\nu\nu$)
-2. Creates standardized dataset using StandardScaler
-3. Automatically splits into train/val/test dataloaders
-4. Handles batch creation and memory-efficient loading
+### Default paths
 
----
+- Input HDF5: `/root/data/danning_h5/ypeng/mc20_qe_v4_recotruth_merged.h5`
+- Log root: `/root/work/ww-flow/logs/`
+- Project name: `hww_inn_regressor`
 
-#### [load_data.py](load_data.py)
-**Purpose**: Load and preprocess HDF5 data (organized from QE-v4 sample) files
+These values are defined in [config.yaml](config.yaml).
 
-**Key Functions**:
-- `load_particles_from_h5()`: Generic HDF5 loader
-  - Recursively reads datasets and attributes from H5 file structure
-  - Handles both datasets and groups
-  - Returns nested dictionary structure matching file hierarchy
+### Default training configuration
 
-- `load_data()`: Main data preprocessing function
-  - Loads particle data (leptons, missing energy, jets) from H5
-  - Collects `truth-level' (parton-level) $W$ boson four-vectors from simulation
-  - Constructs training features X and target variables Y
-  - Returns concatenated numpy arrays across all data categories
+| Parameter | Current value | Notes |
+|-----------|---------------|-------|
+| `batch_size` | `256` | Set in [config.yaml](config.yaml) |
+| `epochs` | `1024` | Max epochs |
+| `learning_rate` | `5e-5` | Used by `AdamW` |
+| `num_blocks` | `30` | Number of FrEIA `AllInOneBlock`s |
+| `obs_dim` | `10` | First 10 reco features are supervised observables |
+| `lack_dim` | `4` | Latent dimension |
+| early stopping patience | `128` | Set in [train.py](train.py) |
+| validation fraction | `0.05` | Set in [train.py](train.py) |
+| test fraction | `0.05` | Set in [train.py](train.py) |
 
-**Data Organization**:
-(The X and Y arrays are not as typical NN, in INN setting we have input and target swapped)
-- Target Y: W boson momenta and masses and additional neutrino scaling variables
-- Input features Y: Lepton momenta (px, py, pz, E), missing energy, jet properties
+### Active loss weights
 
----
+| Loss | Weight |
+|------|--------|
+| `L_x` | `1.0` |
+| `L_y` | `1.0` |
+| `L_z` | `1.0` |
+| `L_pad` | `1.0` |
+| `L_W` | `1.0` |
+| `L_higgs` | `0.5` |
+| `L_neu_mass` | `0.0` |
+| `L_x_huber` | `0.0` |
 
-#### [layers.py](layers.py)
-**Purpose**: Custom neural network building blocks
+## Data Layout
 
-**Key Components**:
-- `DenseDropoutBlock`: Pre-activation dense layer
-  - LayerNorm $\to$ SiLU $\to$ Linear $\to$ Dropout
-  - Prevents activation saturation through pre-normalization
-  
-- `ResidualBlock`: Residual connection with two dense blocks
-  - Handles dimension changes via projection layer when needed
-  - Enables deeper networks without gradient vanishing
-  - Two stacked `DenseDropoutBlock`s with residual connection
+The training code uses INN-style notation, so the usual supervised-learning input/target naming is inverted relative to a standard regressor.
 
-- `WtoNeutrinoBlock`: Physics-informed layer (partial definition shown)
-  - Incorporates physical constraints for $W \to \ell\nu$ decays
-  - Takes scaler objects for denormalization
+- Reco features from [load_data.py](load_data.py) are returned first and stored as `llvv`
+- Truth targets are returned second and stored as `ww`
+- In [train.py](train.py), `X = ww` and `Y = llvv`
 
-- `SNet, TNet, AffineCouplingBlock, Permutation`: construct invetiable coupling layers
-  - Archived, not used in final model
-  - Used FrEIA GLOW blocks instead
+### Reco feature tensor `Y`
 
----
+`Y` has 32 features per event:
 
-#### [model.py](model.py)
-**Purpose**: Main invertible neural network architecture
+- 10 observed variables used as `y`
+  - positive lepton: `px, py, pz, E`
+  - negative lepton: `px, py, pz, E`
+  - MET: `px, py`
+- 22 conditioning variables used as `c`
+  - leading 3 jets: `3 x (px, py, pz, E)` = 12
+  - dilepton system: `px, py, pz, E` = 4
+  - angular features: `deta(l1,l2), dphi(ll,met), dphi(l1,met), dphi(l2,met), dphi(l1,l2), dr(l1,l2)` = 6
 
-**Key Classes**:
-- `INN`: Core invertible neural network
-  - Combines physics block with normalizing flow
-  - Uses GLOW coupling blocks from FrEIA library
-  - Forward pass: Input $\to$ Physics block $\to$ Flow network $\to$ Output
-  - Reverse pass: Sample from latent space $\to$ Reconstruct input
-  
-  **Architecture**:
-  - Input x (interested obs): 8D ($W$ momenta + masses)
-  - Pad to internal dimension (y_dim + z_dim)
-  - Series of GLOW coupling blocks with random permutations
-  - Outputs y (observed obs) and z (latent sample from $\mathcal{N}_\text{z\_dim}(0, I)$) variables
+### Truth tensor `X`
 
-- `INNLightningModule`: PyTorch Lightning wrapper
-  - Implements training/validation loops
-  - Computes multi-component loss function:
-    - `L_y`: L1 loss between predicted and true observables
-    - `L_z`: MMD loss matching latent distributions
-    - `L_x`: MMD loss for reconstructed inputs
-    - `L_pad`: Penalty for non-zero paddings
-    - `L_higgs`: Physics loss for Higgs mass
-    - `L_neu_mass`: Physics loss for neutrino mass (monitor purpose)
-    - `L_y_mmd`: Optional MMD on observables (monitor purpose)
-  - Uses Adam optimizer with configurable learning rate
+The raw truth tensor has 16 features per event:
 
-**How it works**:
-1. Forward pass (simulation): Encode observed data through physics-aware flow
-2. Reverse pass (sampling): Sample from latent space and decode to input space
-3. Loss combines reconstruction and distribution matching objectives
+- 8 trained features
+  - `W+`: `px, py, pz, m`
+  - `W-`: `px, py, pz, m`
+- 8 auxiliary neutrino features kept for scaling and the physics block
+  - neutrino and anti-neutrino: `px, py, pz, m=0`
 
----
+Training uses only the first 8 truth features as the direct INN input.
 
-#### [train.py](train.py)
-**Purpose**: Training script with hyperparameter configuration
+### Effective model dimensions
 
-**Key Configuration**:
-- `BATCH_SIZE`: 512
-- `EPOCHS`: 512 (with early stopping)
-- `LEARNING_RATE`: 1e-5
-- `NUM_BLOCKS`: 10 (GLOW coupling blocks)
-- `LACK_DIM`: 6 (latent dimension)
-- `LOSS_WEIGHTS`: Weights for each loss component
+With the current config and loader:
 
-**Main Workflow**:
-1. Load data from HDF5 file
-2. Extract input ($WW^\ast$) and target ($\ell\ell\nu\nu$) arrays
-3. Initialize data module and compute scalers
-4. Create INN model with computed dimensions
-5. Setup PyTorch Lightning trainer with:
-   - GPU acceleration
-   - Model checkpointing (saves best validation model)
-   - Early stopping (patience=32 epochs)
-   - CSV logging
-6. Train model on training set, validate on validation set
-7. Return data module for later evaluation
+- `x_dim = 8`
+- `inputs_dim = 32`
+- `y_dim = 10`
+- `c_dim = 22`
+- `z_dim = 4`
+- `internal_dim = y_dim + z_dim = 14`
+- `input_pad = internal_dim - x_dim = 6`
 
----
+## Model Architecture
 
-#### [utilities.py](utilities.py)
-**Purpose**: Loss functions and utility functions
+### [model.py](model.py)
 
-**Key Loss Functions**:
-- `mmd_loss()`: Maximum Mean Discrepancy loss
-  - Measures distribution difference between two sets
-  - Uses multiple RBF kernels with adaptive bandwidth
-  - Bandwidth automatically scaled by median distance
-  - Returns MMD$^2$ estimate
-  - Used to match latent distributions between predicted and true
+`INN` combines:
 
-- `higgs_loss()`: Physics-informed loss for Higgs mass reconstruction
-  - Encourages correct Higgs mass (125 GeV) reconstruction
+- `WtoNeutrinoBlock` from [layers.py](layers.py)
+  - forward direction: $(W, \ell) \to \nu$
+  - reverse direction: $(\nu, \ell) \to W$
+- a FrEIA `GraphINN`
+  - 30 conditional `AllInOneBlock`s by default
+  - one FrEIA condition node carrying the 22 conditioning features
 
-- `neu_mass_loss()`: Physics-informed loss for neutrino mass
-  - Constrains neutrino mass reconstruction
-  - Uses scaler objects for proper scale
+`INNLightningModule` wraps the model for PyTorch Lightning training.
 
-**Note**: These losses are weighted components of the total training loss
+### Conditioning network
 
----
+The active subnet constructor is `CondNet` in [layers.py](layers.py). It embeds:
 
-#### [ohbboosting.py](ohbboosting.py)
-**Purpose**: Lorentz boost operations (boost to orthonormal helicity basis) for kinematic reconstruction
+- the INN half-state
+- three jet tokens
+- one dilepton token
+- one angular-feature token
 
-**Key Class**:
-- `Booster`: Implements relativistic kinematics
-  - `_boost_to_rest_frame()`: Boost 4-vectors to rest frame
-  - `_construct_basis()`: Create orthogonal basis in Higgs rest frame
-  - `_map_to_basis()`: Project momenta onto basis vectors
-  - Uses ROOT TLorentzVector for physics calculations
-  - Enables multi-processing for batch operations
+It then refines the INN token with 5 stacked cross-attention blocks before producing coupling parameters.
 
-**How it works**:
-- Boosts particle momenta from lab frame to $W$/$H$ rest frames
-- Constructs physics-inspired coordinate basis
-- Maps reconstructed momenta to meaningful kinematic variables
+### Losses
 
----
+The training step in [model.py](model.py) uses:
 
-#### [visualize.ipynb](visualize.ipynb)
-**Purpose**: Jupyter notebook for analyzing and visualizing results
+- `L_x`: MMD between reconstructed and true $W$ kinematics, excluding the 2 explicit $W$ masses
+- `L_y`: Huber loss on the observed 10 reco variables
+- `L_z`: MMD between predicted latent representation and sampled latent target
+- `L_pad`: mean absolute padding penalty
+- `L_W`: MMD on the two reconstructed $W$ masses
+- `L_higgs`: Huber loss toward $m_H = 125$ GeV
+- `L_neu_mass`: neutrino mass consistency monitor
+- `L_x_huber`: optional Huber monitor on reconstructed $W$ kinematics
 
-**Typical contents**:
-- Load trained model and test data
-- Generate predictions on test set
-- Plot reconstructed vs true kinematic variables
-- Analyze mass distributions and correlations
-- Diagnostic plots for training convergence
+Loss implementations live in [losses.py](losses.py).
 
----
+## File Guide
 
-### Additional Files
-- `record`: Training record/log file
-- `logs/`: Directory storing training logs and checkpoints
+### Core training files
 
-## Workflow
+- [train.py](train.py): main training entry point, logger setup, checkpointing, early stopping
+- [config.yaml](config.yaml): runtime configuration for data path, logging path, and hyperparameters
+- [model.py](model.py): INN and Lightning module
+- [layers.py](layers.py): physics block, conditioning network, archived custom coupling layers
+- [losses.py](losses.py): MMD, Higgs-mass, and neutrino-mass losses
+- [data_module.py](data_module.py): standardization and train/val/test dataloaders
+- [load_data.py](load_data.py): HDF5 loading and feature construction
+- [physics.py](physics.py): helper kinematic functions used during feature building
 
-### Training
+### Analysis and utilities
+
+- [visualize.ipynb](visualize.ipynb): notebook for post-training checks and plots
+- [ohbboosting.py](ohbboosting.py): ROOT-based Lorentz-boost utilities for helicity-basis studies
+- [record](record): local notes/logs
+- [logs/](logs/): checkpoints and CSV logs
+
+## Training
+
+1. Update the paths or hyperparameters in [config.yaml](config.yaml) if needed.
+2. Start training:
+
 ```bash
-python train.py  # Trains INN model from scratch
+python train.py
 ```
 
-1. Loads data from HDF5 file
-2. Preprocesses with standard scaling
-3. Splits into train/val/test
-4. Trains INN model with multi-loss objective
-5. Saves best checkpoint based on validation loss
-6. Uses early stopping if no improvement
+To enable Weights & Biases logging:
 
-### Inference
-```python
-from train import main
-from model import INNLightningModule
-
-# Load trained model
-model = INNLightningModule.load_from_checkpoint("checkpoint.ckpt")
-
-# Sample from latent space
-z_sample = torch.randn(batch_size, z_dim)
-cond = conditioning_variables
-reconstructed_input, _ = model.forward(z_sample, cond, reverse=True)
+```bash
+python train.py --wandb
 ```
 
-## Key Parameters
+### Important runtime behavior
 
-| Parameter | Value | Description |
-|-----------|-------|-------------|
-| `x_dim` | 8 | Input dimension ($W$ momenta + masses + neutrinos (scaling purpose, not engaged in training)) |
-| `y_dim` | 10 | Observables $WW^\ast$ decayed products (leptons, missing energy) |
-| `z_dim` | 6 | Latent dimension (under-constrained DoF $\leftarrow$ neutrinos) |
-| `c_dim` | Variable | Conditioning dimension (jets) |
-| `input_dim` | Variable | Input dimension (leptons, missing energy, jets) |
-| `internal_dim` | Variable | the dimension of the internal layers |
-| `num_blocks` | 10 | Number of GLOW coupling blocks |
-| `batch_size` | 512 | Training batch size |
-| `learning_rate` | 1e-5 | Adam optimizer learning rate |
+- If training starts with `train=True` and the checkpoint directory already exists, [train.py](train.py) deletes the whole project log directory before launching a fresh run.
+- The trainer uses GPU automatically when `torch.cuda.is_available()` is true.
+- Checkpoints monitor `val_loss` and keep only the best model.
 
-## Dependencies
+## Notes
 
-- PyTorch
-- PyTorch Lightning
-- FrEIA (Flow-based Invertible modules)
-- scikit-learn (StandardScaler)
-- numpy, h5py
-- ROOT (for physics calculations)
+- [ohbboosting.py](ohbboosting.py) is not part of the main training path.
+- The archived coupling classes in [layers.py](layers.py) are retained for reference; the active flow uses FrEIA blocks.
+- The HDF5 loader concatenates all top-level categories and removes rows containing NaN or infinite values.
 
 ## References
 
-- GLOW coupling blocks: [Glow: Generative Flow using Invertible 1x1 Convolutions](https://arxiv.org/abs/1805.07722)
-- Fundamental INN structure: [Analyzing Inverse Problems with Invertible Neural Networks](https://arxiv.org/abs/1808.04730v3)
+- INN formulation: [Analyzing Inverse Problems with Invertible Neural Networks](https://arxiv.org/abs/1808.04730)
 - MMD loss: [A Kernel Two-Sample Test](https://www.jmlr.org/papers/volume13/gretton12a/gretton12a.pdf)
-- Boosted basis: [Testing Bell inequalities in Higgs boson decays](https://arxiv.org/abs/2106.01377)
+- Boosted basis motivation: [Testing Bell inequalities in Higgs boson decays](https://arxiv.org/abs/2106.01377)

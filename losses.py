@@ -32,9 +32,9 @@ def mmd_loss(x, y):
         return a**2 / (a**2 + d + tor)  # add tor for numerical stability
     
     for a in bandwidth_range:
-        XX += rbf_kernel(a, dxx)
-        YY += rbf_kernel(a, dyy)
-        XY += rbf_kernel(a, dxy)
+        XX += imq_kernel(a, dxx)
+        YY += imq_kernel(a, dyy)
+        XY += imq_kernel(a, dxy)
         # print("bandwidth: ", a)
         # print("Tot:", torch.mean(XX + YY - 2. * XY))
     # raise Exception("DEBUG: stop here")
