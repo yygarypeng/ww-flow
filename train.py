@@ -63,7 +63,7 @@ def main(train=True):
 		X, Y,
 		batch_size=BATCH_SIZE,
 		val_frac=0.05,
-		test_frac=0.05,
+		test_frac=0.01,
 		num_workers=NUM_WORKERS,
 		persistent_workers=PERSISTENT_WORKERS,
 		pin_memory=PIN_MEMORY,
@@ -72,23 +72,10 @@ def main(train=True):
 	dm.setup()
 	ww_scaler = dm.std_ds.scaler_X
 	lvlv_scaler = dm.std_ds.scaler_Y
-	del dm
-	dm = WBosonDataModule(
-			X[..., :8], Y[..., :],
-			batch_size=BATCH_SIZE,
-			val_frac=0.05,
-			test_frac=0.01,
-			num_workers=NUM_WORKERS,
-			persistent_workers=PERSISTENT_WORKERS,
-			pin_memory=PIN_MEMORY,
-			prefetch_factor=PREFETCH_FACTOR,
-		)
-	ww_dim = X[..., :8].shape[1] # (N, 8) NO NEUTRINOS
-	#  only access lep+-; others are used as cond variables
-	inputs_dim = Y[..., :].shape[1]
+	ww_dim = X.shape[1]
+	inputs_dim = Y.shape[1]
 	y_dim = OBS_DIM # dimension of y (observed variables)
 	c_dim =inputs_dim - y_dim  # conditioning dimension
-	# c_dim = inputs_dim
 	lack_dim = LACK_DIM # number of lacking constraints
 	assert lack_dim % 2 == 0, "lack_dim must be even"
 	# https://arxiv.org/abs/1808.04730

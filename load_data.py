@@ -2,7 +2,7 @@ import numpy as np
 import h5py
 
 from physics import pt, eta, phi, deta, dphi, dr
-
+from ohbboosting import Booster
 
 def load_particles_from_h5(filename):
     result = {}
@@ -136,37 +136,48 @@ def load_data(data_path):
             col(dphi_l2met), #19
             col(dphi_l1l2), #20
             col(dr_l1l2), #21
-            # col(lep_pos_pt),
-            # col(lep_neg_pt),
-            # col(lep_pos_eta),
-            # col(lep_neg_eta),
-            # col(lep_pos_phi),
-            # col(lep_neg_phi),
-            # col(met_pt),
-            # col(met_phi),
-            # col(jet_btag),# check definitin!!
-            # col(n_jets),
-            # col(n_bjets),
         ], axis=-1)
         
         # target objects
+        true_w0_p4 = np.stack([
+            category_data["truth_pos_w"]["px"],
+            category_data["truth_pos_w"]["py"],
+            category_data["truth_pos_w"]["pz"],
+            category_data["truth_pos_w"]["energy"]
+        ], axis=1)
+        true_l0_p4 = np.stack([
+            category_data["truth_pos_lep"]["px"],
+            category_data["truth_pos_lep"]["py"],
+            category_data["truth_pos_lep"]["pz"],
+            category_data["truth_pos_lep"]["energy"]
+        ], axis=1)
+        true_w1_p4 = np.stack([
+            category_data["truth_neg_w"]["px"],
+            category_data["truth_neg_w"]["py"],
+            category_data["truth_neg_w"]["pz"],
+            category_data["truth_neg_w"]["energy"]
+        ], axis=1)
+        true_l1_p4 = np.stack([
+            category_data["truth_neg_lep"]["px"],
+            category_data["truth_neg_lep"]["py"],
+            category_data["truth_neg_lep"]["pz"],
+            category_data["truth_neg_lep"]["energy"]
+        ], axis=1)
+        particles = np.concatenate([
+                true_w0_p4,
+                true_l0_p4,
+                true_w1_p4,
+                true_l1_p4,
+            ], axis=-1)
+        booster = Booster(particles)
+        booster.setup()
+        true_l0_theta_phi, true_l1_theta_phi = booster.lep_theta_phi_in_w_rest()
+        
         target_obj = np.concatenate([
-            col(category_data["truth_pos_w"]["px"]),
-            col(category_data["truth_pos_w"]["py"]),
-            col(category_data["truth_pos_w"]["pz"]),
-            col(category_data["truth_neg_w"]["px"]),
-            col(category_data["truth_neg_w"]["py"]),
-            col(category_data["truth_neg_w"]["pz"]),
-            col(category_data["truth_pos_w"]["m"]),
-            col(category_data["truth_neg_w"]["m"]),
-            col(category_data["truth_nu"]["px"]),
-			col(category_data["truth_nu"]["py"]),
-            col(category_data["truth_nu"]["pz"]),
-			col(category_data["truth_antinu"]["px"]),
-			col(category_data["truth_antinu"]["py"]),
-			col(category_data["truth_antinu"]["pz"]),
-			col(np.zeros_like(category_data["truth_nu"]["energy"])), # massless neutino
-            col(np.zeros_like(category_data["truth_antinu"]["energy"])),
+            col(true_l0_theta_phi[0]),
+            col(true_l0_theta_phi[1]),
+            col(true_l1_theta_phi[0]),
+            col(true_l1_theta_phi[1])
         ], axis=-1)
         
         all_train_objs.append(train_obj)
@@ -196,17 +207,8 @@ if __name__ == "__main__":
     from matplotlib import pyplot as plt
     data_path = "/root/data/danning_h5/ypeng/mc20_qe_v4_recotruth_merged.h5"
     train_obj, target_obj = load_data(data_path)
-    n_bjets = train_obj[:, -1]
-    plt.hist(n_bjets, bins=10, range=(-0.5, 9.5), histtype='stepfilled', alpha=0.7)
-    plt.xlabel("Number of b-jets")
-    plt.ylabel("Entries")
-    # w_pos_mass = target_obj[:, 8]
-    # w_neg_mass = target_obj[:, 9]
-    # plt.hist(w_pos_mass, bins=50, range=(0, 120), histtype='step', label='W+ mass')
-    # plt.hist(w_neg_mass, bins=50, range=(0, 120), histtype='bar', label='W- mass')
-    # plt.xlabel("W mass [GeV]")
-    # plt.ylabel("Entries")
-    # plt.legend()
-    # plt.savefig("w_mass.png")
-    # print("Train objects:", train_obj)
-    # print("Target objects:", target_obj)
+    print("train_obj shape:", train_obj.shape)
+    print("target_obj shape:", target_obj.shape)
+    print("train_obj example:", train_obj[0])
+    print("target_obj example:", target_obj[0])
+    print("Finished loading data.")
