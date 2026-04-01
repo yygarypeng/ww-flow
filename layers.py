@@ -17,9 +17,9 @@ class SelfAttentionBlock(nn.Module):
         res = context
         qkv = self.norm(context)
         attn_out, _ = self.mha(qkv, qkv, qkv, key_padding_mask=key_padding_mask)
-        x = res + 0.5 * attn_out
+        x = res + attn_out
         
-        x = x + 0.5 * self.ffn(x)
+        x = x + self.ffn(x)
         return x
     
 class CrossAttentionBlock(nn.Module):
@@ -42,9 +42,9 @@ class CrossAttentionBlock(nn.Module):
         kv = self.norm_kv(context)
         
         attn_out, _ = self.mha(query=q, key=kv, value=kv, key_padding_mask=key_padding_mask)
-        x = res + 0.5 * attn_out
+        x = res + attn_out
         
-        x = x + 0.5 * self.ffn(x)
+        x = x + self.ffn(x)
         return x
 
 class CondNet(nn.Module):
@@ -53,21 +53,20 @@ class CondNet(nn.Module):
         super().__init__()
         if in_channels <= c_dim:
             raise ValueError(f"in_channels ({in_channels}) must be > c_dim ({c_dim})")
-        # if c_dim < 21:
-        #     raise ValueError(f"c_dim must be >= 21 for [jet0, jet1, jet2, dilep, ang], got {c_dim}")
         if out_channels % 2 != 0:
             raise ValueError(f"out_channels must be even, got {out_channels}")
 
         self.c_dim = c_dim
         # 1. Embedders
         self.inn_embed = nn.Linear(in_channels - c_dim, d_model)
+        self.met_embed = nn.Linear(2, d_model)
         self.jet_embed = nn.Linear(4, d_model)
         self.dilep_embed = nn.Linear(4, d_model)
         self.ang_embed = nn.Linear(5, d_model)
         
         # 2. Lightweight MHA: inn token queries condition tokens.
-        self.input_refiner_lst = nn.ModuleList([SelfAttentionBlock(d_model, nhead, dropout=dropout) for _ in range(1)])
-        self.context_refiner_lst = nn.ModuleList([CrossAttentionBlock(d_model, nhead, dropout=dropout) for _ in range(1)])
+        self.input_refiner_lst = nn.ModuleList([SelfAttentionBlock(d_model, nhead, dropout=dropout) for _ in range(2)])
+        self.context_refiner_lst = nn.ModuleList([CrossAttentionBlock(d_model, nhead, dropout=dropout) for _ in range(2)])
         
         # 3. Output Head
         self.output_head = nn.Sequential(
@@ -85,26 +84,27 @@ class CondNet(nn.Module):
 
         # --- Step 1: Embedding MLP ---
         # observable tokens
-        j0 = self.jet_embed(x_cond[:, 0:4])
-        j1 = self.jet_embed(x_cond[:, 4:8])
-        j2 = self.jet_embed(x_cond[:, 8:12])
-        delep = self.dilep_embed(x_cond[:, 12:16])
-        ang = self.ang_embed(x_cond[:, 16:21])
+        met = self.met_embed(x_cond[:, 0:2])
+        j0 = self.jet_embed(x_cond[:, 2:6])
+        j1 = self.jet_embed(x_cond[:, 6:10])
+        j2 = self.jet_embed(x_cond[:, 10:14])
+        # delep = self.dilep_embed(x_cond[:, 12:16])
+        # ang = self.ang_embed(x_cond[:, 16:21])
         # intermediate inn token
         inn_tok = self.inn_embed(x_inn)
         
         # context tokens are from condition only: [jet0, jet1, jet2, dilep, ang]
-        context = torch.stack([j0, j1, j2, delep, ang], dim=1) # TODO: position info (!)
-        # context = torch.stack([j0, j1, j2], dim=1)
+        # context = torch.stack([j0, j1, j2, delep, ang], dim=1) # TODO: position info (!)
+        context = torch.stack([met, j0, j1, j2], dim=1)
         # query token is from INN input
         inn_query = inn_tok.unsqueeze(1)  # [B, 1, d_model]
         
         batch_size = x.shape[0]
         key_mask = torch.zeros((batch_size, context.shape[1]), dtype=torch.bool, device=x_cond.device)
         # Mask jet tokens that are exactly zero 4-vectors.
-        key_mask[:, 0] = (torch.abs(x_cond[:, 0:4]).sum(dim=1) == 0)  # Jet 0 token
-        key_mask[:, 1] = (torch.abs(x_cond[:, 4:8]).sum(dim=1) == 0)  # Jet 1 token
-        key_mask[:, 2] = (torch.abs(x_cond[:, 8:12]).sum(dim=1) == 0) # Jet 2 token
+        key_mask[:, 1] = (torch.abs(x_cond[:, 2:6]).sum(dim=1) == 0)  # Jet 0 token
+        key_mask[:, 2] = (torch.abs(x_cond[:, 6:10]).sum(dim=1) == 0)  # Jet 1 token
+        key_mask[:, 3] = (torch.abs(x_cond[:, 10:14]).sum(dim=1) == 0) # Jet 2 token
 
         # --- Step 2: SA and CA ---
         for input_refiner, context_refiner in zip(self.input_refiner_lst, self.context_refiner_lst):

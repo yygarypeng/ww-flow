@@ -1,7 +1,7 @@
 parameters:
   loss_weights:
     # W-part
-    L_x: 80.0
+    L_x: 100.0
     # lep-part
     L_y: 10.0
     # N(0, 1) sampling part
@@ -11,23 +11,23 @@ parameters:
     # paper-style noisy-padding inverse consistency pass
     L_pad_noise: 5.0
     # reverse consistency on generated [y_pred, z]
-    L_x_gen: 0.0
+    L_x_gen: 0.5
     # monitoring losses
     L_x_huber: 0.5
   batch_size: 256
   epochs: 1024
   learning_rate: 5.0e-5
-  num_blocks: 20
-  # observed variables dimension (2 lep + met)
-  obs_dim: 10
+  num_blocks: 16
+  # observed variables dimension (2 lep)
+  obs_dim: 8
   # number of lacking constraints (two neutrinos are massless)
   lack_dim: 4
   # dataloader settings (set num_workers > 0 only if stable)
   # TODO: fix (sometimes) hang when num_workers > 0
-  num_workers: 1
+  num_workers: 2
   persistent_workers: false
   pin_memory: true
-  prefetch_factor: 4
+  prefetch_factor: 2
 
 paths:
   data_path: "/root/data/danning_h5/ypeng/mc20_qe_v4_recotruth_merged.h5"

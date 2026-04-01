@@ -40,6 +40,12 @@ def main(train=True):
 	PIN_MEMORY = _param.get("pin_memory", torch.cuda.is_available())
 	PREFETCH_FACTOR = _param.get("prefetch_factor", 2)
 
+	# some stable settings for dataloader and numpy
+	os.environ["OMP_NUM_THREADS"] = str(NUM_WORKERS + 2)
+	os.environ["MKL_NUM_THREADS"] = str(NUM_WORKERS + 2)
+	os.environ["OPENBLAS_NUM_THREADS"] = str(NUM_WORKERS + 2)
+	os.environ["NUMEXPR_NUM_THREADS"] = str(NUM_WORKERS + 2)
+
 	data_path = _cfg["paths"]["data_path"]
 	project_name = _cfg["paths"]["project_name"]
 	ckpt_path = _cfg["paths"]["ckpt_path"] + project_name
@@ -58,7 +64,6 @@ def main(train=True):
 	llvv, ww = data.load_data(data_path) # llvv, WW
 	X = ww.astype(np.float32)
 	Y = llvv.astype(np.float32)
-	# get transformation info (del later) 
 	dm = WBosonDataModule(
 		X, Y,
 		batch_size=BATCH_SIZE,
@@ -70,8 +75,6 @@ def main(train=True):
 		prefetch_factor=PREFETCH_FACTOR,
 	)
 	dm.setup()
-	ww_scaler = dm.std_ds.scaler_X
-	lvlv_scaler = dm.std_ds.scaler_Y
 	ww_dim = X.shape[1]
 	inputs_dim = Y.shape[1]
 	y_dim = OBS_DIM # dimension of y (observed variables)
@@ -89,7 +92,6 @@ def main(train=True):
 			x_dim=ww_dim, inputs_dim=inputs_dim,
 			internal_dim=y_dim + lack_dim,
 			y_dim=y_dim, z_dim=lack_dim, c_dim=c_dim,
-			ww_scaler=ww_scaler, lvlv_scaler=lvlv_scaler,
 			num_blocks=NUM_BLOCKS, lr=LEARNING_RATE,
 			loss_weights=LOSS_WEIGHTS,
 		)

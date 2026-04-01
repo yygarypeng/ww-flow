@@ -126,16 +126,16 @@ def load_data(data_path):
             col(jet_py[:, 2]), #9
             col(jet_pz[:, 2]), #10
             col(jet_energy[:, 2]), #11
-            col(dilep_px), #12
-            col(dilep_py), #13
-            col(dilep_pz), #14
-            col(dilep_energy), #15
-            col(deta_l1l2), #16
-            col(dphi_llmet), #17
-            col(dphi_l1met), #18 (l1 -> pos_lep; l2 -> neg_lep)
-            col(dphi_l2met), #19
-            col(dphi_l1l2), #20
-            col(dr_l1l2), #21
+            # col(dilep_px), #12
+            # col(dilep_py), #13
+            # col(dilep_pz), #14
+            # col(dilep_energy), #15
+            # col(deta_l1l2), #16
+            # col(dphi_llmet), #17
+            # col(dphi_l1met), #18 (l1 -> pos_lep; l2 -> neg_lep)
+            # col(dphi_l2met), #19
+            # col(dphi_l1l2), #20
+            # col(dr_l1l2), #21
         ], axis=-1)
         
         # target objects

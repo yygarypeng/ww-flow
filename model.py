@@ -15,7 +15,6 @@ class INN(nn.Module):
         self, 
         x_dim, inputs_dim, y_dim, z_dim, c_dim,
         num_blocks, internal_dim,
-        ww_scaler, lvlv_scaler,
     ):
         super().__init__()
 
@@ -43,7 +42,7 @@ class INN(nn.Module):
         cond_node = Ff.ConditionNode(c_dim, name='Condition')
         
         # Add coupling blocks
-        def subnet_constructor(in_channels, out_channels, c_dim=self.c_dim, d_model=256, nhead=16, dropout=0.1):
+        def subnet_constructor(in_channels, out_channels, c_dim=self.c_dim, d_model=256, nhead=16, dropout=0.2):
             return CondNet(in_channels=in_channels, out_channels=out_channels, c_dim=c_dim, d_model=d_model, nhead=nhead, dropout=dropout)
         
         for i in range(num_blocks):
@@ -77,7 +76,7 @@ class INN(nn.Module):
             
             # ----- Forward -----
             if input.shape[1] == self.internal_dim:
-                # Input is already padded (e.g., from reverse pass output)
+                # Input is already padded (reverse pass output)
                 x = input
             elif input.shape[1] == self.x_dim:
                 # Input needs padding (original data)
@@ -109,21 +108,15 @@ class INNLightningModule(pl.LightningModule):
         x_dim=8, inputs_dim=10, 
         y_dim=10, z_dim=2, c_dim=20,
         num_blocks=6, internal_dim=12, 
-        ww_scaler=None, lvlv_scaler=None,
         lr=1e-3, loss_weights=None,
     ):
         super().__init__()
         self.save_hyperparameters()
 
-        # Make scalers available to loss functions
-        self.ww_scaler = ww_scaler
-        self.lvlv_scaler = lvlv_scaler
-
         self.inn = INN(
             x_dim, inputs_dim,
             y_dim, z_dim, c_dim,
             num_blocks, internal_dim,
-            ww_scaler, lvlv_scaler,
         )
 
         default_loss_weights = {
