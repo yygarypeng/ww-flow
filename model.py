@@ -42,7 +42,7 @@ class INN(nn.Module):
         cond_node = Ff.ConditionNode(c_dim, name='Condition')
         
         # Add coupling blocks
-        def subnet_constructor(in_channels, out_channels, c_dim=self.c_dim, d_model=256, nhead=16, dropout=0.2):
+        def subnet_constructor(in_channels, out_channels, c_dim=self.c_dim, d_model=128, nhead=16, dropout=0.3):
             return CondNet(in_channels=in_channels, out_channels=out_channels, c_dim=c_dim, d_model=d_model, nhead=nhead, dropout=dropout)
         
         for i in range(num_blocks):

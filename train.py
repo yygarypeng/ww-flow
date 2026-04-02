@@ -8,6 +8,9 @@ import pytorch_lightning as pl
 from pytorch_lightning.loggers import CSVLogger, WandbLogger
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping
 
+# preprocessing: standardization
+from sklearn.preprocessing import StandardScaler
+
 from model import INNLightningModule
 
 from data_module import WBosonDataModule
@@ -63,7 +66,16 @@ def main(train=True):
 	torch.set_float32_matmul_precision("medium") # "high" is more accurate but slower
 	llvv, ww = data.load_data(data_path) # llvv, WW
 	X = ww.astype(np.float32)
+	X_stdscalar = StandardScaler()
+	X = X_stdscalar.fit_transform(X)
 	Y = llvv.astype(np.float32)
+	Y_stdscalar = StandardScaler()
+	Y = Y_stdscalar.fit_transform(Y)
+	# # sanity check for std
+	# print(f"Feature-wise mean after standardization (should be close to 0): {X.mean(axis=0)}")
+	# print(f"Feature-wise std after standardization (should be close to 1): {X.std(axis=0)}")
+	# print(f"Target-wise mean after standardization (should be close to 0): {Y.mean(axis=0)}")
+	# print(f"Target-wise std after standardization (should be close to 1): {Y.std(axis=0)}")	
 	dm = WBosonDataModule(
 		X, Y,
 		batch_size=BATCH_SIZE,
@@ -140,7 +152,7 @@ def main(train=True):
 			wandb_logger.experiment.finish()
 	else:
 		print("Loading model from checkpoint for evaluation... return datamodule")
-		return dm # use the same random sample for splitting data in datamodule
+		return dm, X_stdscalar, Y_stdscalar
 
 if __name__ == "__main__":
     from time import time

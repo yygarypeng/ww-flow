@@ -97,6 +97,16 @@ def load_data(data_path):
         n_jets = category_data["jets"]["n_jets"]
         n_bjets = category_data["jets"]["n_bjets"]
 
+        def safe_log_nonzero(x):
+            out = np.zeros_like(x, dtype=np.float32)
+            mask = x > 0
+            out[mask] = np.log(x[mask])
+            return out
+
+        safe_log_jet_e0 = safe_log_nonzero(jet_energy[:, 0])
+        safe_log_jet_e1 = safe_log_nonzero(jet_energy[:, 1])
+        safe_log_jet_e2 = safe_log_nonzero(jet_energy[:, 2])
+
         # pack them
         # all training mass-like objects are in GeV unit
         
@@ -106,26 +116,26 @@ def load_data(data_path):
             col(lep_pos_px), #0
             col(lep_pos_py), #1
             col(lep_pos_pz), #2
-            col(lep_pos_energy), #3
+            col(np.log(lep_pos_energy)), #3
             col(lep_neg_px), #4
             col(lep_neg_py), #5
             col(lep_neg_pz), #6
-            col(lep_neg_energy), #7
+            col(np.log(lep_neg_energy)), #7
+            # for cond (conditional variables)
             col(met_px), #8
             col(met_py), #9
-            # for cond (conditional variables)
             col(jet_px[:, 0]), #0
             col(jet_py[:, 0]), #1
             col(jet_pz[:, 0]), #2
-            col(jet_energy[:, 0]), #3
+            col(safe_log_jet_e0), #3
             col(jet_px[:, 1]), #4
             col(jet_py[:, 1]), #5
             col(jet_pz[:, 1]), #6
-            col(jet_energy[:, 1]), #7
+            col(safe_log_jet_e1), #7
             col(jet_px[:, 2]), #8
             col(jet_py[:, 2]), #9
             col(jet_pz[:, 2]), #10
-            col(jet_energy[:, 2]), #11
+            col(safe_log_jet_e2), #11
             # col(dilep_px), #12
             # col(dilep_py), #13
             # col(dilep_pz), #14
