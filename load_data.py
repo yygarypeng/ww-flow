@@ -122,30 +122,30 @@ def load_data(data_path):
             col(lep_neg_pz), #6
             col(np.log(lep_neg_energy)), #7
             # for cond (conditional variables)
-            col(met_px), #8
-            col(met_py), #9
-            col(jet_px[:, 0]), #0
-            col(jet_py[:, 0]), #1
-            col(jet_pz[:, 0]), #2
-            col(safe_log_jet_e0), #3
-            col(jet_px[:, 1]), #4
-            col(jet_py[:, 1]), #5
-            col(jet_pz[:, 1]), #6
-            col(safe_log_jet_e1), #7
-            col(jet_px[:, 2]), #8
-            col(jet_py[:, 2]), #9
-            col(jet_pz[:, 2]), #10
-            col(safe_log_jet_e2), #11
-            # col(dilep_px), #12
-            # col(dilep_py), #13
-            # col(dilep_pz), #14
-            # col(dilep_energy), #15
-            # col(deta_l1l2), #16
-            # col(dphi_llmet), #17
-            # col(dphi_l1met), #18 (l1 -> pos_lep; l2 -> neg_lep)
-            # col(dphi_l2met), #19
-            # col(dphi_l1l2), #20
-            # col(dr_l1l2), #21
+            col(met_px), #0
+            col(met_py), #1
+            col(jet_px[:, 0]), #2
+            col(jet_py[:, 0]), #3
+            col(jet_pz[:, 0]), #4
+            col(safe_log_jet_e0), #5
+            col(jet_px[:, 1]), #6
+            col(jet_py[:, 1]), #7
+            col(jet_pz[:, 1]), #8
+            col(safe_log_jet_e1), #9
+            col(jet_px[:, 2]), #10
+            col(jet_py[:, 2]), #11
+            col(jet_pz[:, 2]), #12
+            col(safe_log_jet_e2), #13
+            col(deta_l1l2), #14 (l1 -> pos_lep; l2 -> neg_lep)
+            col(dphi_llmet), #15
+            col(dphi_l1met), #16
+            col(dphi_l2met), #17
+            col(dphi_l1l2), #18
+            # col(dr_l1l2), #19
+            # col(dilep_px), #18
+            # col(dilep_py), #19
+            # col(dilep_pz), #20
+            # col(dilep_energy), #21
         ], axis=-1)
         
         # target objects

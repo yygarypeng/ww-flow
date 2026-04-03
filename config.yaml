@@ -17,7 +17,7 @@ parameters:
   batch_size: 256
   epochs: 1024
   learning_rate: 5.0e-5
-  num_blocks: 16
+  num_blocks: 10
   # observed variables dimension (2 lep)
   obs_dim: 8
   # number of lacking constraints (two neutrinos are massless)

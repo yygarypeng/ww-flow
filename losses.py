@@ -11,7 +11,7 @@ def mmd_loss(x, y):
         median_dist = torch.median(dists)
         sel_dist = 1.0 if median_dist.item() < 1e-16 else median_dist
         # print("Median distance: ", sel_dist.item()) # debug
-        bandwidth_range = [0.05*sel_dist, 0.5*sel_dist, sel_dist, 5*sel_dist, 50*sel_dist]
+        bandwidth_range = [0.05*sel_dist, 0.5*sel_dist, 5*sel_dist, 50*sel_dist]
 
     xx, yy, xy = torch.mm(x, x.t()), torch.mm(y, y.t()), torch.mm(x, y.t())
     rx = xx.diag().unsqueeze(0).expand_as(xx)
@@ -30,9 +30,9 @@ def mmd_loss(x, y):
         return a**2 / (a**2 + d + 1e-16)  # add 1e-16 for numerical stability
     
     for a in bandwidth_range:
-        XX += rbf_kernel(a, dxx)
-        YY += rbf_kernel(a, dyy)
-        XY += rbf_kernel(a, dxy)
+        XX += imq_kernel(a, dxx)
+        YY += imq_kernel(a, dyy)
+        XY += imq_kernel(a, dxy)
         # print("bandwidth: ", a)
         # print("Tot:", torch.mean(XX + YY - 2. * XY))
     # raise Exception("DEBUG: stop here")

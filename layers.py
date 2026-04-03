@@ -61,8 +61,8 @@ class CondNet(nn.Module):
         self.inn_embed = nn.Linear(in_channels - c_dim, d_model)
         self.met_embed = nn.Linear(2, d_model)
         self.jet_embed = nn.Linear(4, d_model)
-        self.dilep_embed = nn.Linear(4, d_model)
         self.ang_embed = nn.Linear(5, d_model)
+        self.num_tokens = 5  # [met, jet0, jet1, jet2, ang]
         
         # 2. Lightweight MHA: inn token queries condition tokens.
         self.input_refiner_lst = nn.ModuleList([SelfAttentionBlock(d_model, nhead, dropout=dropout) for _ in range(2)])
@@ -78,24 +78,23 @@ class CondNet(nn.Module):
         nn.init.zeros_(self.output_head[-1].bias)
 
     def forward(self, x):
-        # Expected x: [inn_half(..), jet0(4), jet1(4), jet2(4), dilep(4), ang(5)]
+        # Expected x: [inn_half(..), jet0(4), jet1(4), jet2(4), ang(6)]
         x_inn = x[:, :-self.c_dim]
         x_cond = x[:, -self.c_dim:]
 
         # --- Step 1: Embedding MLP ---
         # observable tokens
-        met = self.met_embed(x_cond[:, 0:2])
+        met = self.met_embed(x_cond[:, :2])
         j0 = self.jet_embed(x_cond[:, 2:6])
         j1 = self.jet_embed(x_cond[:, 6:10])
         j2 = self.jet_embed(x_cond[:, 10:14])
-        # delep = self.dilep_embed(x_cond[:, 12:16])
-        # ang = self.ang_embed(x_cond[:, 16:21])
+        ang = self.ang_embed(x_cond[:, 14:])
         # intermediate inn token
         inn_tok = self.inn_embed(x_inn)
         
-        # context tokens are from condition only: [jet0, jet1, jet2, dilep, ang]
-        # context = torch.stack([j0, j1, j2, delep, ang], dim=1) # TODO: position info (!)
-        context = torch.stack([met, j0, j1, j2], dim=1)
+        # context tokens are from condition only: [jet0, jet1, jet2, ang]
+        context = torch.stack([met, j0, j1, j2, ang], dim=1) # TODO: position info (!)
+        # context = torch.stack([met, j0, j1, j2], dim=1)
         # query token is from INN input
         inn_query = inn_tok.unsqueeze(1)  # [B, 1, d_model]
         
@@ -115,6 +114,6 @@ class CondNet(nn.Module):
             
         # --- Step 3: Output Head ---
         # only take out refined inn token
-        outputs = self.output_head(inn_query[:, 0, :])
+        outputs = self.output_head(inn_query.squeeze(1))
         
         return outputs
