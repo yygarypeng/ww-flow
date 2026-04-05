@@ -62,11 +62,12 @@ class CondNet(nn.Module):
         self.met_embed = nn.Linear(2, d_model)
         self.jet_embed = nn.Linear(4, d_model)
         self.ang_embed = nn.Linear(5, d_model)
-        self.num_tokens = 5  # [met, jet0, jet1, jet2, ang]
+        self.lep_m_embed = nn.Linear(2, d_model)
+        self.num_tokens = 6  # [met, jet0, jet1, jet2, ang, lep_m]
         
         # 2. Lightweight MHA: inn token queries condition tokens.
-        self.input_refiner_lst = nn.ModuleList([SelfAttentionBlock(d_model, nhead, dropout=dropout) for _ in range(2)])
-        self.context_refiner_lst = nn.ModuleList([CrossAttentionBlock(d_model, nhead, dropout=dropout) for _ in range(2)])
+        self.input_refiner_lst = nn.ModuleList([SelfAttentionBlock(d_model, nhead, dropout=dropout) for _ in range(1)])
+        self.context_refiner_lst = nn.ModuleList([CrossAttentionBlock(d_model, nhead, dropout=dropout) for _ in range(1)])
         
         # 3. Output Head
         self.output_head = nn.Sequential(
@@ -88,12 +89,13 @@ class CondNet(nn.Module):
         j0 = self.jet_embed(x_cond[:, 2:6])
         j1 = self.jet_embed(x_cond[:, 6:10])
         j2 = self.jet_embed(x_cond[:, 10:14])
-        ang = self.ang_embed(x_cond[:, 14:])
+        ang = self.ang_embed(x_cond[:, 14:19])
+        lep_m = self.lep_m_embed(x_cond[:, 19:21])
         # intermediate inn token
         inn_tok = self.inn_embed(x_inn)
         
         # context tokens are from condition only: [jet0, jet1, jet2, ang]
-        context = torch.stack([met, j0, j1, j2, ang], dim=1) # TODO: position info (!)
+        context = torch.stack([met, j0, j1, j2, ang, lep_m], dim=1) # TODO: position info (!)
         # context = torch.stack([met, j0, j1, j2], dim=1)
         # query token is from INN input
         inn_query = inn_tok.unsqueeze(1)  # [B, 1, d_model]
@@ -101,9 +103,9 @@ class CondNet(nn.Module):
         batch_size = x.shape[0]
         key_mask = torch.zeros((batch_size, context.shape[1]), dtype=torch.bool, device=x_cond.device)
         # Mask jet tokens that are exactly zero 4-vectors.
-        key_mask[:, 1] = (torch.abs(x_cond[:, 2:6]).sum(dim=1) == 0)  # Jet 0 token
-        key_mask[:, 2] = (torch.abs(x_cond[:, 6:10]).sum(dim=1) == 0)  # Jet 1 token
-        key_mask[:, 3] = (torch.abs(x_cond[:, 10:14]).sum(dim=1) == 0) # Jet 2 token
+        key_mask[:, 1] = (torch.abs(x_cond[:, 2:6]).sum(dim=1) == 0.0)  # Jet 0 token
+        key_mask[:, 2] = (torch.abs(x_cond[:, 6:10]).sum(dim=1) == 0.0)  # Jet 1 token
+        key_mask[:, 3] = (torch.abs(x_cond[:, 10:14]).sum(dim=1) == 0.0) # Jet 2 token
 
         # --- Step 2: SA and CA ---
         for input_refiner, context_refiner in zip(self.input_refiner_lst, self.context_refiner_lst):

@@ -1,23 +1,23 @@
 parameters:
   loss_weights:
     # W-part
-    L_x: 100.0
+    L_x: 50.0
     # lep-part
     L_y: 10.0
     # N(0, 1) sampling part
-    L_z: 20.0
+    L_z: 10.0
     # padding part (if any)
     L_pad: 5.0
     # paper-style noisy-padding inverse consistency pass
     L_pad_noise: 5.0
     # reverse consistency on generated [y_pred, z]
-    L_x_gen: 0.5
+    L_x_gen: 0.0
     # monitoring losses
-    L_x_huber: 0.5
+    L_x_huber: 0.1
   batch_size: 256
   epochs: 1024
   learning_rate: 5.0e-5
-  num_blocks: 10
+  num_blocks: 16
   # observed variables dimension (2 lep)
   obs_dim: 8
   # number of lacking constraints (two neutrinos are massless)
@@ -32,4 +32,4 @@ parameters:
 paths:
   data_path: "/root/data/danning_h5/ypeng/mc20_qe_v4_recotruth_merged.h5"
   project_name: "hww_inn_regressor-lep"
-  ckpt_path: "/root/work/ww-flow/logs/"
+  ckpt_path: "/root/work/ww-flow_nohl/logs/"

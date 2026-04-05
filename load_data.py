@@ -1,7 +1,7 @@
 import numpy as np
 import h5py
 
-from physics import pt, eta, phi, deta, dphi, dr
+from physics import pt, eta, phi, deta, dphi, dr, mass
 from ohbboosting import Booster
 
 def load_particles_from_h5(filename):
@@ -54,10 +54,12 @@ def load_data(data_path):
         lep_pos_py = category_data["pos_lep"]["py"]
         lep_pos_pz = category_data["pos_lep"]["pz"]
         lep_pos_energy = category_data["pos_lep"]["energy"]
+        lep_pos_m = mass(lep_pos_px, lep_pos_py, lep_pos_pz, lep_pos_energy)
         lep_neg_px = category_data["neg_lep"]["px"]
         lep_neg_py = category_data["neg_lep"]["py"]
         lep_neg_pz = category_data["neg_lep"]["pz"]
         lep_neg_energy = category_data["neg_lep"]["energy"]
+        lep_neg_m = mass(lep_neg_px, lep_neg_py, lep_neg_pz, lep_neg_energy)
         
         lep_pos_pt = category_data["pos_lep"]["pt"]
         lep_neg_pt = category_data["neg_lep"]["pt"]
@@ -115,11 +117,11 @@ def load_data(data_path):
             # for y (observed variables)
             col(lep_pos_px), #0
             col(lep_pos_py), #1
-            col(lep_pos_pz), #2
+            col(lep_pos_eta), #2
             col(np.log(lep_pos_energy)), #3
             col(lep_neg_px), #4
             col(lep_neg_py), #5
-            col(lep_neg_pz), #6
+            col(lep_neg_eta), #6
             col(np.log(lep_neg_energy)), #7
             # for cond (conditional variables)
             col(met_px), #0
@@ -141,11 +143,8 @@ def load_data(data_path):
             col(dphi_l1met), #16
             col(dphi_l2met), #17
             col(dphi_l1l2), #18
-            # col(dr_l1l2), #19
-            # col(dilep_px), #18
-            # col(dilep_py), #19
-            # col(dilep_pz), #20
-            # col(dilep_energy), #21
+            col(lep_pos_m), #19
+            col(lep_neg_m), #20
         ], axis=-1)
         
         # target objects
