@@ -1,7 +1,7 @@
 # ww-flow
 
 Flow-based reconstruction tools for studying
-`H -> WW* -> l nu l nu` kinematics with conditional invertible neural
+$H \to WW^\ast \to \ell\nu\ell\nu$ kinematics with conditional invertible neural
 networks.
 
 The current training target is the truth lepton angular information in the
