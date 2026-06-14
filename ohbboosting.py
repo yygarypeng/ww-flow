@@ -1,7 +1,6 @@
+from ROOT import TLorentzVector, TVector3
 import multiprocessing
 import numpy as np
-import ROOT
-from ROOT import TLorentzVector, TVector3
 
 class Booster:
     def __init__(self, particles):
@@ -17,13 +16,14 @@ class Booster:
 
     def _construct_basis(self, WpBoson, Beam_p):
         """Constructs orthogonal basis (k, r, n) in Higgs rest frame."""
-        k = TVector3(WpBoson.X(), WpBoson.Y(), WpBoson.Z()).Unit()
-        p = TVector3(Beam_p.X(), Beam_p.Y(), Beam_p.Z()).Unit()
+        k = WpBoson.Vect().Unit()
+        p = Beam_p.Vect().Unit()
         y = p.Dot(k)
-        r_length = np.sqrt(1 - y * y)
+        r_length = np.sqrt(1 - y * y + 1e-16)
         r = (1 / r_length) * (p - y * k)
         n = (1 / r_length) * (p.Cross(k))
-        return k, r, n
+        # print("Norm of basis vectors:", np.sum(np.array(n)**2, axis=-1), np.sum(np.array(r)**2, axis=-1), np.sum(np.array(k)**2, axis=-1))
+        return n, r, k
 
     def _map_to_basis(self, lepton, n, r, k):
         """Maps lepton momentum to (n, r, k) basis."""
@@ -36,29 +36,34 @@ class Booster:
         )
 
     def w_rest_booster(self, part):
+        part = np.asarray(part, dtype=float).reshape(-1)
+        if part.size != 16:
+            raise ValueError(f"Expected one event with 16 values, got shape {np.asarray(part).shape} and size {part.size}.")
+
         WpBoson = TLorentzVector(*part[:4])
         WpLepton = TLorentzVector(*part[4:8])
         WnBoson = TLorentzVector(*part[8:12])
         WnLepton = TLorentzVector(*part[12:16])
         # Step 1: Construct Higgs 4-vector and boost all particles to Higgs rest frame
         Higgs = WpBoson + WnBoson
-        Beam_p = TLorentzVector(0, 0, 1, 1) # spatial-axis
-        Higgs_boost = Higgs.BoostVector()
-        self._boost_to_rest_frame([WpBoson, WpLepton, WnBoson, WnLepton, Beam_p], Higgs_boost)
+        Beam_p = TLorentzVector(0, 0, 1, 1) # dummy time and assign beam direction along +z
+        self._boost_to_rest_frame([WpBoson, WpLepton, WnBoson, WnLepton], Higgs.BoostVector())
 
-        # Step 2: Construct orthogonal basis (k, r, n)
-        k, r, n = self._construct_basis(WpBoson, Beam_p)
+        # Step 2: Construct orthogonal basis (k, r, n) 
+        # k along W+ momentum, r in the plane of W- and beam, n orthogonal to both
+        n, r, k = self._construct_basis(WnBoson, Beam_p)
 
         # Step 3: Boost to W+ and W- rest frames
-        self._boost_to_rest_frame([WpBoson, WpLepton], WpBoson.BoostVector())
-        self._boost_to_rest_frame([WnBoson, WnLepton], WnBoson.BoostVector())
+        self._boost_to_rest_frame([WpLepton], WpBoson.BoostVector())
+        self._boost_to_rest_frame([WnLepton], WnBoson.BoostVector())
 
         # Step 4: Map leptons to (n, r, k) basis
         WpLp_k = self._map_to_basis(WpLepton, n, r, k)
         WnLp_k = self._map_to_basis(WnLepton, n, r, k)
 
-        w_rest_WpLepton = np.array([WpLp_k.X(), WpLp_k.Y(), WpLp_k.Z(), WpLp_k.T()]) # np.array([px, py, pz, energy])
-        w_rest_WnLepton = np.array([WnLp_k.X(), WnLp_k.Y(), WnLp_k.Z(), WnLp_k.T()])
+        # Keep a consistent 2D row shape for safe concatenation across all events.
+        w_rest_WpLepton = np.array([WpLp_k.Px(), WpLp_k.Py(), WpLp_k.Pz(), WpLp_k.E()], dtype=float).reshape(1, -1)
+        w_rest_WnLepton = np.array([WnLp_k.Px(), WnLp_k.Py(), WnLp_k.Pz(), WnLp_k.E()], dtype=float).reshape(1, -1)
 
         return w_rest_WpLepton, w_rest_WnLepton
 
@@ -68,7 +73,7 @@ class Booster:
 			# Retrieve the output from the pool
             results = list(pool.map(self.w_rest_booster, self.particles))
         w_rest_lp, w_rest_ln = zip(*results)
-        self.w_rest_lp, self.w_rest_ln = np.vstack(w_rest_lp), np.vstack(w_rest_ln)
+        self.w_rest_lp, self.w_rest_ln = np.concatenate(w_rest_lp), np.concatenate(w_rest_ln)
         
     def lep_4_in_w_rest(self):
         return self.w_rest_lp, self.w_rest_ln
@@ -76,20 +81,22 @@ class Booster:
     def lep_theta_phi_in_w_rest(self):
         
         def theta(p4):
-            p3_mag = np.sqrt(np.sum(np.square(p4[:, 0:3]), axis=1))  # Calculate the magnitude of the spatial components
-            pz = p4[:, 2]  # Extract the pz component
-            return np.arccos(np.divide(pz, p3_mag)) / np.pi  # Normalize to [0, 1]
+            p3_mag = np.sqrt(np.sum(np.square(p4[:, 0:3]), axis=1))
+            pz = p4[:, 2]
+            _clamped = np.clip(np.divide(pz, p3_mag), -1.0, 1.0)
+            return np.arccos(_clamped) / np.pi
 
         def phi(p4):
-            phi = np.arctan2(p4[:, 1], p4[:, 0])  # Calculate the azimuthal angle
-            return phi / np.pi  # normalize to [-1, 1]
+            phi = np.arctan2(p4[:, 1], p4[:, 0])
+            phi_norm = phi / np.pi
+            return np.where(phi_norm < -0.5, phi_norm + 2.0, phi_norm)
 
-        lead_theta = theta(self.w_rest_lp)
-        lead_phi = phi(self.w_rest_lp)
-        sublead_theta = theta(self.w_rest_ln)
-        sublead_phi = phi(self.w_rest_ln)
+        pos_theta = theta(self.w_rest_lp)
+        pos_phi = phi(self.w_rest_lp)
+        neg_theta = theta(self.w_rest_ln)
+        neg_phi = phi(self.w_rest_ln)
 
-        return (lead_theta, lead_phi), (sublead_theta, sublead_phi)
+        return (pos_theta, pos_phi), (neg_theta, neg_phi)
     
     def lep_xi_in_w_rest(self):
         
@@ -120,9 +127,11 @@ class Booster:
 
 if __name__ == "__main__":
     import time
+    from matplotlib import pyplot as plt
     t1 = time.time()
     import load_data
-    data = load_data.load_particles_from_h5("/root/data/mc20_truth.h5")
+    data = load_data.load_particles_from_h5("/root/data/archived/mc20_truth.h5")
+    presel = (data) 
     particles = np.concatenate(
 		[
 			data["lead_w"]["p4"],
@@ -136,8 +145,10 @@ if __name__ == "__main__":
     booster = Booster(particles)
     booster.setup()
     print(booster.lep_theta_phi_in_w_rest())
-    print(booster.lep_4_in_w_rest())
-    print(booster.lep_xi_in_w_rest())
-    print(booster.cglmp_bij())
+    plt.hist(booster.lep_theta_phi_in_w_rest()[0][1], bins=50, alpha=0.5, label="pos_phi")
+    plt.savefig("pos_phi_hist.png")
+    # print(booster.lep_4_in_w_rest())
+    # print(booster.lep_xi_in_w_rest())
+    # print(booster.cglmp_bij())
     t2 = time.time()
     print(f"Elapsed time: {t2 - t1:<.2f} seconds")

@@ -1,3 +1,5 @@
+from math import perm
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -42,7 +44,7 @@ class INN(nn.Module):
         cond_node = Ff.ConditionNode(c_dim, name='Condition')
         
         # Add coupling blocks
-        def subnet_constructor(in_channels, out_channels, c_dim=self.c_dim, d_model=256, nhead=16, dropout=0.3):
+        def subnet_constructor(in_channels, out_channels, c_dim=self.c_dim, d_model=128, nhead=16, dropout=0.2):
             return CondNet(in_channels=in_channels, out_channels=out_channels, c_dim=c_dim, d_model=d_model, nhead=nhead, dropout=dropout)
         
         for i in range(num_blocks):
@@ -51,7 +53,7 @@ class INN(nn.Module):
                 Fm.AllInOneBlock,
                 {
                     'subnet_constructor': subnet_constructor,
-                    'affine_clamping': 2.0,
+                    'affine_clamping': 3.0,
                     "global_affine_init": 1.0,
                     'global_affine_type': 'SOFTPLUS',
                     'permute_soft': True
@@ -73,20 +75,8 @@ class INN(nn.Module):
 
         if not reverse:
             assert cond is not None
-            
             # ----- Forward -----
-            if input.shape[1] == self.internal_dim:
-                # Input is already padded (reverse pass output)
-                x = input
-            elif input.shape[1] == self.x_dim:
-                # Input needs padding (original data)
-                x = torch.cat([
-                    input,
-                    torch.zeros(batch_size, self.input_pad, device=device)
-                ], dim=1) # with size (batch_size, internal_dim)
-            else:
-                raise ValueError(f"Input dimension {input.shape[1]} is neither x_dim={self.x_dim} nor internal_dim={self.internal_dim}")
-            
+            x = input        
             output, _ = self.flow(x, c=cond, rev=False)
             # logdet_total += logdet_flow
 
@@ -96,7 +86,6 @@ class INN(nn.Module):
 
         else:
             assert cond is not None
-        
             # ----- Reverse -----
             x_out, _ = self.flow(input, c=cond, rev=True)
             return x_out
@@ -121,16 +110,13 @@ class INNLightningModule(pl.LightningModule):
 
         default_loss_weights = {
             "L_x": 1.0,
+            "L_x_huber": 1.0,
             "L_y": 1.0,
             "L_z": 1.0,
             "L_pad": 1.0,
             "L_pad_noise": 1.0,
+            # monitor losses (weights to 0)
             "L_x_gen": 0.0,
-            # physical losses
-            "L_W": 0.0,
-            "L_x_huber": 0.0,
-            "L_higgs": 0.0,
-            "L_neu_mass": 0.0,
         }
         self.loss_weights = loss_weights or default_loss_weights
 
@@ -139,54 +125,56 @@ class INNLightningModule(pl.LightningModule):
 
 
     def _shared_step(self, batch):
+        
+        # forward 
         x, y_true = batch # without padding on x; sampling z on y
+        x = torch.cat([x, torch.zeros(x.shape[0], self.inn.input_pad, device=x.device)], dim=1)
         cond = y_true[:, self.hparams.y_dim:]  # conditioning variables
         y_true = y_true[:, :self.hparams.y_dim]
-        y_pred, z_pred = self(x, cond, reverse=False)  # Forward pass (full graph for L_y)
-        z_sample = torch.randn_like(z_pred)  # random sample from N(0,1) ... generative mode
-        yz = torch.cat([y_true, z_sample], dim=1)
+        y_pred, z_pred = self(x, cond, reverse=False)  # Forward pass
+        L_y = F.huber_loss(
+            y_pred, 
+            y_true
+        )
+        
+        # make sure y is independent of z by permutng and detaching
         yz_pred = torch.cat([y_pred.detach(), z_pred], dim=1)
-        x_recon = self(yz, cond, reverse=True)
-
-        # Reverse consistency on generated samples (paper-style: block gradient to y branch)
-        yz_gen = torch.cat([y_pred, z_sample], dim=1)
-        x_gen_recon = self(yz_gen, cond, reverse=True)
-
+        z_sample = torch.randn_like(z_pred)  # random sample from N(0,1) ... generative mode
+        L_z = mmd_loss(
+            yz_pred, 
+            torch.cat([y_true, z_sample], dim=1)
+        )
+        
+        # backward
+        x_recon = self(torch.cat([y_true, z_pred], dim=1), cond, reverse=True)
+        x_gen_recon = self(torch.cat([y_true, z_sample], dim=1), cond, reverse=True)
+        L_x = mmd_loss(
+            x_gen_recon[:, :-self.inn.input_pad], 
+            x[:, :-self.inn.input_pad]
+        ) # not include W masses
+        L_x_huber = F.huber_loss(
+            x_recon[:, :-self.inn.input_pad], 
+            x[:, :-self.inn.input_pad]
+        ) # need to be very soft 
+        L_pad = F.huber_loss(
+            x_recon[:, -self.inn.input_pad:],
+            torch.zeros_like(x_recon[:, -self.inn.input_pad:])
+        )
+        
         # noisy-padding (ensure 0, and noise can give the same outcomes)
-        x_recon_noisy = self(yz_gen, cond, reverse=True) # x'
-        x_recon_nopad = x_recon[:, :-self.inn.input_pad] # not include neutrino masses part
+        x_recon_noisy = x_gen_recon.clone()
+        # estimate the scale of noise based on the non-pad part of x_recon
+        x_recon_nopad = x_recon[:, :-self.inn.input_pad]
         pad_std = x_recon_nopad.detach().std(dim=0)
         noise_scale = pad_std.mean() + 1e-8 # protect against zero std
         x_recon_noisy[:, -self.inn.input_pad:] = torch.randn_like(x_recon_noisy[:, -self.inn.input_pad:]) * noise_scale
         y_from_noisy, z_from_noisy = self(x_recon_noisy, cond, reverse=False)
         yz_from_noisy_pad = torch.cat([y_from_noisy, z_from_noisy], dim=1)
-        
-        # losses (paper Sec. 3.3)
-        L_x = mmd_loss(
-            x_recon[:, :-self.inn.input_pad], 
-            x
-        ) # not include W masses
-        L_y = F.huber_loss(
-            y_pred, 
-            y_true
-        )
-        # L_y_mmd = mmd_loss(y_pred, y_true) # complementary to L_y
-        L_z = mmd_loss(
-            yz_pred, 
-            yz
-        )
-        # Penalize non-zero padding and noisy padding (sec 3.3)
-        L_pad = (torch.square(x_recon[:, -self.inn.input_pad:])).mean()
         L_pad_noise = F.huber_loss(yz_from_noisy_pad, torch.cat([y_pred.detach(), z_pred.detach()], dim=1))
-        
-        # additional physical losses
-        L_x_huber = F.huber_loss(
-            x_recon[:, :-self.inn.input_pad], 
-            x
-        )
+        # monitor loss (weights to 0)
         L_x_gen = F.huber_loss(
             x_gen_recon[:, :-self.inn.input_pad], 
-            x
+            x[:, :-self.inn.input_pad]
         )
         
         return {
@@ -225,7 +213,6 @@ class INNLightningModule(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         losses = self._shared_step(batch)
-            
         val_loss = self.loss_weights["L_x"] * losses["L_x"] \
             + self.loss_weights["L_y"] * losses["L_y"] \
             + self.loss_weights["L_z"] * losses["L_z"] \
@@ -246,5 +233,5 @@ class INNLightningModule(pl.LightningModule):
         }, on_step=False, on_epoch=True, prog_bar=True)
 
     def configure_optimizers(self):
-        optimizer = optim.AdamW(self.parameters(), lr=self.hparams.lr, weight_decay=1e-5)
+        optimizer = optim.AdamW(self.parameters(), lr=self.hparams.lr, weight_decay=1e-4)
         return optimizer

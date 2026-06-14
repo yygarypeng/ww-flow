@@ -1,167 +1,167 @@
 # ww-flow
 
-Flow-based reconstruction of $H \to WW^\ast \to \ell\nu\ell\nu$ kinematics with an invertible neural network.
+Flow-based reconstruction tools for studying
+`H -> WW* -> l nu l nu` kinematics with conditional invertible neural
+networks.
+
+The current training target is the truth lepton angular information in the
+two W-boson rest frames. The model learns a conditional normalizing flow from
+truth-level angular variables to reconstructed event observables, then samples
+the inverse direction for generative reconstruction.
 
 Contact: [Yuan-Yen Peng](mailto:yuan-yen.peng@cern.ch)
 
 ## Overview
 
-This repository trains a conditional INN to map between reconstructed event observables and truth-level $W$ boson kinematics.
+This repository contains a PyTorch Lightning training pipeline for a
+conditional INN based on FrEIA `AllInOneBlock` layers. The workflow is:
 
-The current model uses two stages:
+1. Load reconstructed and truth objects from an HDF5 ntuple.
+2. Build compact reconstructed observables and conditioning features.
+3. Build truth lepton-angle targets in the W rest frames.
+4. Standardize inputs and targets.
+5. Train a conditional INN with MMD, Huber, and padding-consistency losses.
+6. Use notebooks and plotting helpers for post-training validation.
 
-1. A physics block converts between $W$ bosons and neutrinos using lepton four-vectors and the massless-neutrino constraint.
-2. A conditional normalizing flow models the remaining under-constrained degrees of freedom with latent variables.
+Runtime options are controlled through [`config.yaml`](config.yaml).
 
-The training setup is now config-driven via [config.yaml](config.yaml), not hard-coded in [train.py](train.py).
+## Repository Layout
 
-## Current Setup
+| File | Purpose |
+|------|---------|
+| [`train.py`](train.py) | Main training entry point, logging, checkpointing, and early stopping |
+| [`config.yaml`](config.yaml) | Data path, output path, model dimensions, and hyperparameters |
+| [`model.py`](model.py) | FrEIA INN and PyTorch Lightning module |
+| [`layers.py`](layers.py) | Attention-based conditional subnet used inside coupling blocks |
+| [`load_data.py`](load_data.py) | HDF5 loading and feature construction |
+| [`data_module.py`](data_module.py) | Dataset standardization and train/validation/test dataloaders |
+| [`losses.py`](losses.py) | MMD loss implementation |
+| [`physics.py`](physics.py) | Basic kinematic helper functions |
+| [`ohbboosting.py`](ohbboosting.py) | ROOT-based boosts into W rest frames and angular observables |
+| [`eval.py`](eval.py) | RMSE and R2 helpers for angular validation |
+| [`plottingtools.py`](plottingtools.py) | ATLAS-style histogram and residual plotting helpers |
+| [`visualize.ipynb`](visualize.ipynb) | Interactive post-training checks and plotting |
+| [`run_train.sh`](run_train.sh) | Example background training launcher |
 
-### Default paths
+## Current Configuration
 
-- Input HDF5: `/root/data/danning_h5/ypeng/mc20_qe_v4_recotruth_merged.h5`
-- Log root: `/root/work/ww-flow/logs/`
-- Project name: `hww_inn_regressor`
+Default values are defined in [`config.yaml`](config.yaml).
 
-These values are defined in [config.yaml](config.yaml).
+| Parameter | Default | Notes |
+|-----------|---------|-------|
+| `data_path` | `/root/data/danning_h5/ypeng/mc20_qe_v4_recotruth_merged.h5` | Input HDF5 file |
+| `project_name` | `hww_inn_regressor-lep` | Log/checkpoint directory name |
+| `ckpt_path` | `/root/work/ww-flow/logs/` | Log root |
+| `batch_size` | `256` | Training batch size |
+| `epochs` | `1024` | Maximum training epochs |
+| `learning_rate` | `1.0e-4` | AdamW learning rate |
+| `num_blocks` | `8` | Number of FrEIA coupling blocks |
+| `obs_dim` | `8` | Observed lepton variables predicted as `y` |
+| `lack_dim` | `8` | Latent/sampled dimension `z` |
+| `num_workers` | `6` | DataLoader worker count |
+| `persistent_workers` | `true` | DataLoader worker persistence |
+| `pin_memory` | `true` | DataLoader pinned-memory transfer |
+| `prefetch_factor` | `4` | DataLoader prefetch factor when workers are enabled |
 
-### Default training configuration
+Active loss weights:
 
-| Parameter | Current value | Notes |
-|-----------|---------------|-------|
-| `batch_size` | `256` | Set in [config.yaml](config.yaml) |
-| `epochs` | `1024` | Max epochs |
-| `learning_rate` | `5e-5` | Used by `AdamW` |
-| `num_blocks` | `30` | Number of FrEIA `AllInOneBlock`s |
-| `obs_dim` | `10` | First 10 reco features are supervised observables |
-| `lack_dim` | `4` | Latent dimension |
-| early stopping patience | `128` | Set in [train.py](train.py) |
-| validation fraction | `0.05` | Set in [train.py](train.py) |
-| test fraction | `0.05` | Set in [train.py](train.py) |
-
-### Active loss weights
-
-| Loss | Weight |
-|------|--------|
-| `L_x` | `1.0` |
-| `L_y` | `1.0` |
-| `L_z` | `1.0` |
-| `L_pad` | `1.0` |
-| `L_W` | `1.0` |
-| `L_higgs` | `0.5` |
-| `L_neu_mass` | `0.0` |
-| `L_x_huber` | `0.0` |
+| Loss | Weight | Meaning |
+|------|--------|---------|
+| `L_x` | `10.0` | MMD loss on generated target variables |
+| `L_x_huber` | `0.5` | Huber reconstruction loss on target variables |
+| `L_y` | `0.1` | Huber loss on observed reco variables |
+| `L_z` | `10.0` | MMD loss encouraging Gaussian latent behavior |
+| `L_pad` | `1.0` | Padding reconstruction consistency |
+| `L_pad_noise` | `0.1` | Noisy-padding consistency |
+| `L_x_gen` | `0.0` | Monitoring-only generated-target Huber loss |
 
 ## Data Layout
 
-The training code uses INN-style notation, so the usual supervised-learning input/target naming is inverted relative to a standard regressor.
+`load_data.load_data(data_path)` returns two arrays:
 
-- Reco features from [load_data.py](load_data.py) are returned first and stored as `llvv`
-- Truth targets are returned second and stored as `ww`
-- In [train.py](train.py), `X = ww` and `Y = llvv`
+| Name in code | Shape | Meaning |
+|--------------|-------|---------|
+| `train_obj` / `llvv` | `(N, 21)` | Reconstructed observables and conditioning features |
+| `target_obj` / `ww` | `(N, 6)` | Truth lepton-angle targets in W rest frames |
 
-### Reco feature tensor `Y`
+Rows containing NaN or infinite values are removed after all categories are
+concatenated.
 
-`Y` has 32 features per event:
+### Reconstructed Feature Tensor
 
-- 10 observed variables used as `y`
-  - positive lepton: `px, py, pz, E`
-  - negative lepton: `px, py, pz, E`
-  - MET: `px, py`
-- 22 conditioning variables used as `c`
-  - leading 3 jets: `3 x (px, py, pz, E)` = 12
-  - dilepton system: `px, py, pz, E` = 4
-  - angular features: `deta(l1,l2), dphi(ll,met), dphi(l1,met), dphi(l2,met), dphi(l1,l2), dr(l1,l2)` = 6
+The first `obs_dim = 8` columns are the directly predicted observed variables:
 
-### Truth tensor `X`
+| Columns | Variables |
+|---------|-----------|
+| `0:4` | positive lepton `px`, `py`, `eta`, `log(E)` |
+| `4:8` | negative lepton `px`, `py`, `eta`, `log(E)` |
 
-The raw truth tensor has 16 features per event:
+The remaining `c_dim = 13` columns are conditioning variables:
 
-- 8 trained features
-  - `W+`: `px, py, pz, m`
-  - `W-`: `px, py, pz, m`
-- 8 auxiliary neutrino features kept for scaling and the physics block
-  - neutrino and anti-neutrino: `px, py, pz, m=0`
+| Columns | Variables |
+|---------|-----------|
+| `8:10` | MET `px`, `py` |
+| `10:14` | leading jet `px`, `py`, `pz`, `log(E)` |
+| `14:18` | subleading jet `px`, `py`, `pz`, `log(E)` |
+| `18:21` | dilepton high-level features: `deta(l1,l2)`, `dphi(l1,l2)`, `m_ll` |
 
-Training uses only the first 8 truth features as the direct INN input.
+The conditional subnet in [`layers.py`](layers.py) expects this exact
+13-dimensional conditioning layout.
 
-### Effective model dimensions
+### Target Tensor
 
-With the current config and loader:
+The target tensor has 6 columns:
 
-- `x_dim = 8`
-- `inputs_dim = 32`
-- `y_dim = 10`
-- `c_dim = 22`
-- `z_dim = 4`
-- `internal_dim = y_dim + z_dim = 14`
-- `input_pad = internal_dim - x_dim = 6`
+| Columns | Variables |
+|---------|-----------|
+| `0` | positive lepton `theta / pi` in the W rest frame |
+| `1:3` | positive lepton `sin(phi)`, `cos(phi)` |
+| `3` | negative lepton `theta / pi` in the W rest frame |
+| `4:6` | negative lepton `sin(phi)`, `cos(phi)` |
 
-## Model Architecture
+The `phi` target is encoded as sine and cosine to avoid a discontinuity at the
+angular boundary.
 
-### [model.py](model.py)
+### Effective Model Dimensions
 
-`INN` combines:
+With the current defaults:
 
-- `WtoNeutrinoBlock` from [layers.py](layers.py)
-  - forward direction: $(W, \ell) \to \nu$
-  - reverse direction: $(\nu, \ell) \to W$
-- a FrEIA `GraphINN`
-  - 30 conditional `AllInOneBlock`s by default
-  - one FrEIA condition node carrying the 22 conditioning features
+| Dimension | Value |
+|-----------|-------|
+| `x_dim` | `6` |
+| `inputs_dim` | `21` |
+| `y_dim` | `8` |
+| `c_dim` | `13` |
+| `z_dim` | `8` |
+| `internal_dim = y_dim + z_dim` | `16` |
+| `input_pad = internal_dim - x_dim` | `10` |
 
-`INNLightningModule` wraps the model for PyTorch Lightning training.
+## Installation
 
-### Conditioning network
+This project is a research codebase and does not currently ship a locked
+environment file. Install the core dependencies in a Python environment with
+GPU-compatible PyTorch if training on CUDA.
 
-The active subnet constructor is `CondNet` in [layers.py](layers.py). It embeds:
+Required Python packages include:
 
-- the INN half-state
-- three jet tokens
-- one dilepton token
-- one angular-feature token
+- `numpy`
+- `h5py`
+- `torch`
+- `pytorch-lightning`
+- `scikit-learn`
+- `PyYAML`
+- `FrEIA`
+- `matplotlib`
+- `mplhep`
 
-It then refines the INN token with 5 stacked cross-attention blocks before producing coupling parameters.
-
-### Losses
-
-The training step in [model.py](model.py) uses:
-
-- `L_x`: MMD between reconstructed and true $W$ kinematics, excluding the 2 explicit $W$ masses
-- `L_y`: Huber loss on the observed 10 reco variables
-- `L_z`: MMD between predicted latent representation and sampled latent target
-- `L_pad`: mean absolute padding penalty
-- `L_W`: MMD on the two reconstructed $W$ masses
-- `L_higgs`: Huber loss toward $m_H = 125$ GeV
-- `L_neu_mass`: neutrino mass consistency monitor
-- `L_x_huber`: optional Huber monitor on reconstructed $W$ kinematics
-
-Loss implementations live in [losses.py](losses.py).
-
-## File Guide
-
-### Core training files
-
-- [train.py](train.py): main training entry point, logger setup, checkpointing, early stopping
-- [config.yaml](config.yaml): runtime configuration for data path, logging path, and hyperparameters
-- [model.py](model.py): INN and Lightning module
-- [layers.py](layers.py): physics block, conditioning network, archived custom coupling layers
-- [losses.py](losses.py): MMD, Higgs-mass, and neutrino-mass losses
-- [data_module.py](data_module.py): standardization and train/val/test dataloaders
-- [load_data.py](load_data.py): HDF5 loading and feature construction
-- [physics.py](physics.py): helper kinematic functions used during feature building
-
-### Analysis and utilities
-
-- [visualize.ipynb](visualize.ipynb): notebook for post-training checks and plots
-- [ohbboosting.py](ohbboosting.py): ROOT-based Lorentz-boost utilities for helicity-basis studies
-- [record](record): local notes/logs
-- [logs/](logs/): checkpoints and CSV logs
+The boosting utilities in [`ohbboosting.py`](ohbboosting.py) also require
+PyROOT, because they use `ROOT.TLorentzVector` and `ROOT.TVector3`.
 
 ## Training
 
-1. Update the paths or hyperparameters in [config.yaml](config.yaml) if needed.
-2. Start training:
+1. Edit [`config.yaml`](config.yaml) if the data path, log directory, or
+   hyperparameters should change.
+2. Run training:
 
 ```bash
 python train.py
@@ -173,20 +173,46 @@ To enable Weights & Biases logging:
 python train.py --wandb
 ```
 
-### Important runtime behavior
+The helper script launches the same training job in the background with CPU
+affinity and writes output to `record`:
 
-- If training starts with `train=True` and the checkpoint directory already exists, [train.py](train.py) deletes the whole project log directory before launching a fresh run.
+```bash
+bash run_train.sh
+```
+
+Important runtime behavior:
+
+- If the configured checkpoint directory already exists, `train.py` removes it
+  before starting a fresh training run.
 - The trainer uses GPU automatically when `torch.cuda.is_available()` is true.
-- Checkpoints monitor `val_loss` and keep only the best model.
+- Checkpointing monitors `val_loss` and keeps only the best checkpoint.
+- CSV logs are written under `logs/<project_name>/log/`.
+
+## Evaluation And Plotting
+
+Use [`eval.py`](eval.py) for basic RMSE and R2 calculations on predicted versus
+truth arrays. Use [`plottingtools.py`](plottingtools.py) and
+[`visualize.ipynb`](visualize.ipynb) for histogram, residual, and ratio-panel
+checks.
+
+The plotting utilities use ATLAS-style `mplhep` formatting and support optional
+save paths for generated figures.
 
 ## Notes
 
-- [ohbboosting.py](ohbboosting.py) is not part of the main training path.
-- The archived coupling classes in [layers.py](layers.py) are retained for reference; the active flow uses FrEIA blocks.
-- The HDF5 loader concatenates all top-level categories and removes rows containing NaN or infinite values.
+- The HDF5 loader concatenates all top-level categories in the input file.
+- Jet conditioning currently uses only the leading and subleading jets.
+- Jet slots with exactly zero four-vectors are masked in the attention-based
+  conditional subnet.
+- Generated logs, checkpoints, Python bytecode, and local records are ignored
+  by [`.gitignore`](.gitignore).
 
 ## References
 
 - INN formulation: [Analyzing Inverse Problems with Invertible Neural Networks](https://arxiv.org/abs/1808.04730)
 - MMD loss: [A Kernel Two-Sample Test](https://www.jmlr.org/papers/volume13/gretton12a/gretton12a.pdf)
-- Boosted basis motivation: [Testing Bell inequalities in Higgs boson decays](https://arxiv.org/abs/2106.01377)
+- Boosted-basis motivation: [Testing Bell inequalities in Higgs boson decays](https://arxiv.org/abs/2106.01377)
+
+## License
+
+This repository is distributed under the terms of the [LICENSE](LICENSE) file.

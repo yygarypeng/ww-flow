@@ -90,7 +90,7 @@ def main(train=True):
 	ww_dim = X.shape[1]
 	inputs_dim = Y.shape[1]
 	y_dim = OBS_DIM # dimension of y (observed variables)
-	c_dim =inputs_dim - y_dim  # conditioning dimension
+	c_dim = inputs_dim - y_dim  # conditioning dimension
 	lack_dim = LACK_DIM # number of lacking constraints
 	assert lack_dim % 2 == 0, "lack_dim must be even"
 	# https://arxiv.org/abs/1808.04730

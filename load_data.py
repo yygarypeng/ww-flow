@@ -1,7 +1,7 @@
 import numpy as np
 import h5py
 
-from physics import pt, eta, phi, deta, dphi, dr, mass
+from physics import pt, eta, phi, deta, dphi, dr
 from ohbboosting import Booster
 
 def load_particles_from_h5(filename):
@@ -54,12 +54,12 @@ def load_data(data_path):
         lep_pos_py = category_data["pos_lep"]["py"]
         lep_pos_pz = category_data["pos_lep"]["pz"]
         lep_pos_energy = category_data["pos_lep"]["energy"]
-        lep_pos_m = mass(lep_pos_px, lep_pos_py, lep_pos_pz, lep_pos_energy)
+        lep_pos_id = category_data["pos_lep"]["pdgId"]
         lep_neg_px = category_data["neg_lep"]["px"]
         lep_neg_py = category_data["neg_lep"]["py"]
         lep_neg_pz = category_data["neg_lep"]["pz"]
         lep_neg_energy = category_data["neg_lep"]["energy"]
-        lep_neg_m = mass(lep_neg_px, lep_neg_py, lep_neg_pz, lep_neg_energy)
+        lep_neg_id = category_data["neg_lep"]["pdgId"]
         
         lep_pos_pt = category_data["pos_lep"]["pt"]
         lep_neg_pt = category_data["neg_lep"]["pt"]
@@ -134,17 +134,10 @@ def load_data(data_path):
             col(jet_py[:, 1]), #7
             col(jet_pz[:, 1]), #8
             col(safe_log_jet_e1), #9
-            col(jet_px[:, 2]), #10
-            col(jet_py[:, 2]), #11
-            col(jet_pz[:, 2]), #12
-            col(safe_log_jet_e2), #13
-            col(deta_l1l2), #14 (l1 -> pos_lep; l2 -> neg_lep)
-            col(dphi_llmet), #15
-            col(dphi_l1met), #16
-            col(dphi_l2met), #17
-            col(dphi_l1l2), #18
-            col(lep_pos_m), #19
-            col(lep_neg_m), #20
+            col(deta_l1l2), #10 (l1 -> pos_lep; l2 -> neg_lep)
+            col(dphi_l1l2), #11
+            col(m_ll), #12
+            # col(dilep_eta), #13
         ], axis=-1)
         
         # target objects
@@ -182,11 +175,18 @@ def load_data(data_path):
         booster.setup()
         true_l0_theta_phi, true_l1_theta_phi = booster.lep_theta_phi_in_w_rest()
         
+        # Encode periodic phi with sin/cos to avoid discontinuity at the boundary.
+        # Booster returns angles in rad/pi units, so multiply by pi before trig.
+        true_l0_phi_rad = true_l0_theta_phi[1] * np.pi
+        true_l1_phi_rad = true_l1_theta_phi[1] * np.pi
+
         target_obj = np.concatenate([
             col(true_l0_theta_phi[0]),
-            col(true_l0_theta_phi[1]),
+            col(np.sin(true_l0_phi_rad)),
+            col(np.cos(true_l0_phi_rad)),
             col(true_l1_theta_phi[0]),
-            col(true_l1_theta_phi[1])
+            col(np.sin(true_l1_phi_rad)),
+            col(np.cos(true_l1_phi_rad)),
         ], axis=-1)
         
         all_train_objs.append(train_obj)
