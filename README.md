@@ -25,6 +25,27 @@ conditional INN based on FrEIA `AllInOneBlock` layers. The workflow is:
 
 Runtime options are controlled through [`config.yaml`](config.yaml).
 
+## Difference From Main
+
+`main` is the W/neutrino reconstruction baseline. This branch changes the
+training problem to lepton angular reconstruction in the W rest frames.
+
+| Area | `main` | `target_lep_ang` |
+|------|--------|------------------|
+| Physics target | W-boson and neutrino kinematics | positive/negative lepton angles in W rest frames |
+| Raw target tensor | `(N, 16)` W and neutrino variables | `(N, 6)` angle variables: `theta`, `sin(phi)`, `cos(phi)` for each lepton |
+| Reco feature tensor | `(N, 32)` with leptons, MET, three jets, dilepton, and angular features | `(N, 21)` with compact lepton, MET, two-jet, and dilepton high-level features |
+| Observed variables `y` | 10 variables: two leptons plus MET | 8 variables: two leptons only, using `px`, `py`, `eta`, `log(E)` |
+| Conditioning variables `c` | 22 variables: three jets, dilepton four-vector, angular features | 13 variables: MET, two jets, and dilepton high-level features |
+| Active model path | `WtoNeutrinoBlock` plus FrEIA conditional flow | FrEIA conditional flow without the W-to-neutrino physics block |
+| Loss emphasis | W/neutrino reconstruction plus W, Higgs, and neutrino-mass physics losses | angular-target reconstruction, latent matching, and padding consistency |
+| Utilities | notebook-driven validation | adds `eval.py`, `plottingtools.py`, and updated visualization workflow |
+
+In practical terms, `main` asks the network to reconstruct missing kinematic
+degrees of freedom and enforce physical mass constraints. This branch asks the
+network to reconstruct helicity-basis lepton-angle observables more directly,
+using sine/cosine encoding for `phi` to avoid angular-boundary discontinuities.
+
 ## Repository Layout
 
 | File | Purpose |
