@@ -82,7 +82,7 @@ Active loss weights:
 
 | Name in code | Shape | Meaning |
 |--------------|-------|---------|
-| `train_obj` / `llvv` | `(N, 32)` | Reconstructed observables and conditioning features |
+| `train_obj` / `llvv` | `(N, 23)` | Reconstructed observables and conditioning features |
 | `target_obj` / `ww` | `(N, 16)` | Raw truth W-boson and neutrino target variables |
 
 Rows containing NaN or infinite values are removed after all categories are
@@ -98,13 +98,12 @@ The first `obs_dim = 10` columns are the directly predicted observed variables:
 | `4:8` | negative lepton `px`, `py`, `pz`, `E` |
 | `8:10` | MET `px`, `py` |
 
-The remaining `c_dim = 22` columns are conditioning variables:
+The remaining `c_dim = 13` columns are conditioning variables:
 
 | Columns | Variables |
 |---------|-----------|
-| `10:22` | leading three jets, each as `px`, `py`, `pz`, `E` |
-| `22:26` | dilepton system `px`, `py`, `pz`, `E` |
-| `26:32` | angular features: `deta(l1,l2)`, `dphi(ll,met)`, `dphi(l1,met)`, `dphi(l2,met)`, `dphi(l1,l2)`, `dr(l1,l2)` |
+| `10:18` | leading two jets, each as `px`, `py`, `pz`, `E` |
+| `18:23` | angular features: `deta(l1,l2)`, `dphi(ll,met)`, `dphi(l1,met)`, `dphi(l2,met)`, `dphi(l1,l2)` |
 
 ### Target Tensor
 
@@ -131,9 +130,9 @@ With the current defaults:
 | Dimension | Value |
 |-----------|-------|
 | `x_dim` | `8` |
-| `inputs_dim` | `32` |
+| `inputs_dim` | `23` |
 | `y_dim` | `10` |
-| `c_dim` | `22` |
+| `c_dim` | `13` |
 | `z_dim` | `6` |
 | `internal_dim = y_dim + z_dim` | `16` |
 | `input_pad = internal_dim - x_dim` | `8` |
@@ -148,8 +147,8 @@ The active model in [`model.py`](model.py) combines two pieces:
 | FrEIA `GraphINN` | Conditional normalizing flow over the standardized internal representation |
 
 The conditional flow uses an attention-based `CondNet` in [`layers.py`](layers.py).
-It embeds the INN half-state plus condition tokens for the three leading jets,
-the dilepton system, and angular high-level features.
+It embeds the INN half-state plus condition tokens for the two leading jets and
+angular high-level features.
 
 ## Installation
 
@@ -198,7 +197,7 @@ Important runtime behavior:
 ## Notes
 
 - The HDF5 loader concatenates all top-level categories in the input file.
-- Jet conditioning uses the leading three jet slots.
+- Jet conditioning uses the leading two jet slots.
 - Jet slots with exactly zero four-vectors are masked in the attention-based
   conditional subnet.
 - Generated logs, checkpoints, Python bytecode, and local records are ignored
